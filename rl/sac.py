@@ -96,6 +96,11 @@ class SACAgent:
         self.tau = tau
         self.alpha = alpha
         self.batch_size = batch_size
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        self.hidden_dim = hidden_dim
+        self.lr = lr
+        self.buffer_size = buffer_size
 
         self.actor = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(DEVICE)
         self.q1 = QNetwork(obs_dim, act_dim, hidden_dim).to(DEVICE)
@@ -168,4 +173,40 @@ class SACAgent:
     def load_actor(self, path):
         self.actor.load_state_dict(torch.load(path, map_location=DEVICE))
         self.actor.eval()
+
+    def save_checkpoint(self, path):
+        payload = {
+            "meta": {
+                "obs_dim": self.obs_dim,
+                "act_dim": self.act_dim,
+                "hidden_dim": self.hidden_dim,
+                "gamma": self.gamma,
+                "tau": self.tau,
+                "alpha": self.alpha,
+                "lr": self.lr,
+                "batch_size": self.batch_size,
+                "buffer_size": self.buffer_size,
+            },
+            "actor": self.actor.state_dict(),
+            "q1": self.q1.state_dict(),
+            "q2": self.q2.state_dict(),
+            "q1_target": self.q1_target.state_dict(),
+            "q2_target": self.q2_target.state_dict(),
+            "actor_opt": self.actor_opt.state_dict(),
+            "critic_opt": self.critic_opt.state_dict(),
+        }
+        torch.save(payload, path)
+
+    def load_checkpoint(self, path, load_optimizers=True):
+        payload = torch.load(path, map_location=DEVICE)
+        self.actor.load_state_dict(payload["actor"])
+        self.q1.load_state_dict(payload["q1"])
+        self.q2.load_state_dict(payload["q2"])
+        self.q1_target.load_state_dict(payload["q1_target"])
+        self.q2_target.load_state_dict(payload["q2_target"])
+        if load_optimizers:
+            if "actor_opt" in payload:
+                self.actor_opt.load_state_dict(payload["actor_opt"])
+            if "critic_opt" in payload:
+                self.critic_opt.load_state_dict(payload["critic_opt"])
 

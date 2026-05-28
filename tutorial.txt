@@ -37,6 +37,10 @@ Próg upadku i randomizacja:
 python train_sim.py --train-fall-angle-deg 25
 python train_sim.py --no-domain-randomization
 
+Niższy środek ciężkości (bliżej osi kół):
+
+python train_sim.py --com-height-m 0.15
+
 ----------------------------------------------------------------------------
 2) PRZYGOTOWANIE RASPBERRY PI
 ----------------------------------------------------------------------------
@@ -138,6 +142,30 @@ Po każdym teście:
 5) Powtórz test na RPi
 
 To jest standardowy proces - zwykle potrzeba kilku iteracji.
+
+----------------------------------------------------------------------------
+7b) ONLINE DOUCZANIE BEZPOŚREDNIO NA RPI (OPCJONALNE)
+----------------------------------------------------------------------------
+Masz też tryb online RL na robocie:
+
+python online_train_pi.py \
+  --actor-path artifacts/actor_best.pt \
+  --profile safe \
+  --tilt-limit-deg 15
+
+Skrypt zapisuje:
+- artifacts/sac_online_latest.pt
+- artifacts/sac_online_best.pt
+
+Wznowienie:
+
+python online_train_pi.py --resume-checkpoint artifacts/sac_online_latest.pt
+
+Ważne:
+- zaczynaj od profile=safe,
+- trzymaj niski próg tilt (np. 15-20),
+- miej fizyczny kill-switch,
+- przerwij natychmiast, jeśli robot wpada w niestabilne oscylacje.
 
 ----------------------------------------------------------------------------
 8) FAQ: "CZY WYŻSZA NAGRODA = LEPIEJ?"

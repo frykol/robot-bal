@@ -19,10 +19,12 @@ def train(
     plot_update_every,
     train_fall_angle_deg,
     no_domain_randomization,
+    com_height_m,
 ):
     env = InvertedPendulumEnv(
         fall_angle_deg=train_fall_angle_deg,
         domain_randomization=not no_domain_randomization,
+        com_height_m=com_height_m,
     )
     agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim)
 
@@ -229,6 +231,12 @@ def parse_args():
         action="store_true",
         help="Disable sim domain randomization (not recommended for transfer).",
     )
+    parser.add_argument(
+        "--com-height-m",
+        type=float,
+        default=0.11,
+        help="Axle-to-center-of-mass distance in meters for training dynamics.",
+    )
     return parser.parse_args()
 
 
@@ -245,5 +253,6 @@ if __name__ == "__main__":
         args.plot_update_every,
         args.train_fall_angle_deg,
         args.no_domain_randomization,
+        args.com_height_m,
     )
 

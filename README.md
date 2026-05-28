@@ -15,6 +15,7 @@ This repository now includes a full SAC pipeline for a balancing robot:
 - `export_actor.py` - TorchScript export for deterministic deployment.
 - `run_policy_pi.py` - runs learned policy on Raspberry Pi.
 - `calibrate_pi.py` - stationary IMU calibration on Raspberry Pi.
+- `online_train_pi.py` - online SAC fine-tuning directly on Raspberry Pi.
 
 ## Mass model used in simulation
 
@@ -92,6 +93,23 @@ python run_policy_pi.py \
   --profile safe \
   --tilt-limit-deg 20 \
   --log-path logs/run_001.csv
+```
+
+### Online fine-tuning on Raspberry Pi
+
+Start from a pretrained actor and continue learning on robot:
+
+```bash
+python online_train_pi.py \
+  --actor-path artifacts/actor_best.pt \
+  --profile safe \
+  --tilt-limit-deg 15
+```
+
+Resume from previous online checkpoint:
+
+```bash
+python online_train_pi.py --resume-checkpoint artifacts/sac_online_latest.pt
 ```
 
 ## Suggested sim-to-real path

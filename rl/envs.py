@@ -14,7 +14,12 @@ class InvertedPendulumEnv:
     Action: normalized in [-1, 1], internally scaled to force.
     """
 
-    def __init__(self, fall_angle_deg=30.0, domain_randomization=True):
+    def __init__(
+        self,
+        fall_angle_deg=30.0,
+        domain_randomization=True,
+        com_height_m=0.11,
+    ):
         self.g = 9.81
 
         # Component masses from user-provided data:
@@ -22,7 +27,9 @@ class InvertedPendulumEnv:
         self.m_nominal = 0.320  # wheels+motors [kg]
         self.M_nominal = 0.771  # body [kg]
 
-        self.l_nominal = 0.15
+        # Distance from wheel axle to center of mass.
+        # Lower center of mass -> smaller l.
+        self.l_nominal = float(com_height_m)
         self.dt = 0.01
         self.force_max_nominal = 10.0
         self.theta_max = np.radians(float(fall_angle_deg))
