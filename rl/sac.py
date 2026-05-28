@@ -102,11 +102,11 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         s, a, r, ns, d = map(np.stack, zip(*batch))
         return (
-            torch.FloatTensor(s).to(DEVICE),
-            torch.FloatTensor(a).to(DEVICE),
-            torch.FloatTensor(r, dtype=torch.float32).unsqueeze(1).to(DEVICE),
-            torch.FloatTensor(ns).to(DEVICE),
-            torch.FloatTensor(d, dtype=torch.float32).unsqueeze(1).to(DEVICE),
+            torch.tensor(s, dtype=torch.float32).to(DEVICE),
+            torch.tensor(a, dtype=torch.float32).to(DEVICE),
+            torch.tensor(r, dtype=torch.float32).to(DEVICE).unsqueeze(1),
+            torch.tensor(ns, dtype=torch.float32).to(DEVICE),
+            torch.tensor(d, dtype=torch.float32).to(DEVICE).unsqueeze(1),
         )
 
     def __len__(self):

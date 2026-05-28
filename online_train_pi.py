@@ -124,7 +124,7 @@ def run_online_training(args):
 
     print(
         f"Online SAC on {torch.device('cpu')} | batch={args.batch_size} | "
-        f"hidden={args.hidden_dim} | Ctrl+C to stop."
+        f"hidden={hidden_dim} | Ctrl+C to stop."
     )
     try:
         while episode_idx <= args.episodes:
