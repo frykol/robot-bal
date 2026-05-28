@@ -167,6 +167,14 @@ Ważne:
 - miej fizyczny kill-switch,
 - przerwij natychmiast, jeśli robot wpada w niestabilne oscylacje.
 
+Jeśli po ~15-20 epizodach jest "Illegal instruction" / błędna instrukcja:
+- to zwykle startuje pierwszy update PyTorch (bufor osiąga batch-size),
+- użyj mniejszego batcha:
+  python online_train_pi.py --batch-size 16 --hidden-dim 64
+- albo tylko zbieraj dane bez uczenia:
+  python online_train_pi.py --updates-per-step 0
+- upewnij się, że torch na RPi jest z piwheels (ARM), nie z PC.
+
 ----------------------------------------------------------------------------
 8) FAQ: "CZY WYŻSZA NAGRODA = LEPIEJ?"
 ----------------------------------------------------------------------------

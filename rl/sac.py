@@ -11,6 +11,13 @@ from torch.distributions import Normal
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _torch_load(path):
+    try:
+        return torch.load(path, map_location=DEVICE, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=DEVICE)
+
+
 class SquashedGaussianActor(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_dim=256):
         super().__init__()
@@ -70,9 +77,9 @@ class ReplayBuffer:
         return (
             torch.FloatTensor(s).to(DEVICE),
             torch.FloatTensor(a).to(DEVICE),
-            torch.FloatTensor(r).unsqueeze(1).to(DEVICE),
+            torch.FloatTensor(r, dtype=torch.float32).unsqueeze(1).to(DEVICE),
             torch.FloatTensor(ns).to(DEVICE),
-            torch.FloatTensor(d).unsqueeze(1).to(DEVICE),
+            torch.FloatTensor(d, dtype=torch.float32).unsqueeze(1).to(DEVICE),
         )
 
     def __len__(self):
@@ -171,8 +178,22 @@ class SACAgent:
         torch.save(self.actor.state_dict(), path)
 
     def load_actor(self, path):
-        self.actor.load_state_dict(torch.load(path, map_location=DEVICE))
+        state = _torch_load(path)
+        self.actor.load_state_dict(state)
         self.actor.eval()
+
+    def load_actor_for_training(self, path):
+        """Load pretrained actor weights; keep critics trainable for online SAC."""
+        state = _torch_load(path)
+        self.actor.load_state_dict(state)
+        self.q1_target.load_state_dict(self.q1.state_dict())
+        self.q2_target.load_state_dict(self.q2.state_dict())
+        self.set_train_mode()
+
+    def set_train_mode(self):
+        self.actor.train()
+        self.q1.train()
+        self.q2.train()
 
     def save_checkpoint(self, path):
         payload = {
@@ -198,7 +219,19 @@ class SACAgent:
         torch.save(payload, path)
 
     def load_checkpoint(self, path, load_optimizers=True):
-        payload = torch.load(path, map_location=DEVICE)
+        try:
+            payload = torch.load(path, map_location=DEVICE, weights_only=False)
+        except TypeError:
+            payload = torch.load(path, map_location=DEVICE)
+        meta = payload.get("meta", {})
+        if meta.get("obs_dim") not in (None, self.obs_dim) or meta.get("act_dim") not in (
+            None,
+            self.act_dim,
+        ):
+            raise ValueError(
+                f"Checkpoint obs/act dims {meta.get('obs_dim')}/{meta.get('act_dim')} "
+                f"do not match agent {self.obs_dim}/{self.act_dim}"
+            )
         self.actor.load_state_dict(payload["actor"])
         self.q1.load_state_dict(payload["q1"])
         self.q2.load_state_dict(payload["q2"])
@@ -209,4 +242,5 @@ class SACAgent:
                 self.actor_opt.load_state_dict(payload["actor_opt"])
             if "critic_opt" in payload:
                 self.critic_opt.load_state_dict(payload["critic_opt"])
+        self.set_train_mode()
 
