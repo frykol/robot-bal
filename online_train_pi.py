@@ -141,11 +141,16 @@ def run_online_training(args):
     )
     if manual:
         print("Tryb ręczny: każdy epizod startuje po Enter; po upadku zapis checkpointu.")
+    deterministic_actions = args.explore_prob <= 0.0
+    if deterministic_actions:
+        print("Akcje deterministyczne (bez eksploracji SAC).")
     try:
         if manual:
             _wait_for_episode_start(episode_idx, args.episodes)
         while episode_idx <= args.episodes:
-            if np.random.rand() < args.explore_prob:
+            if deterministic_actions:
+                action = agent.act(obs, deterministic=True)
+            elif np.random.rand() < args.explore_prob:
                 action = agent.act(obs, deterministic=False)
             else:
                 action = agent.act(obs, deterministic=True)
@@ -260,7 +265,12 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--rolling-window", type=int, default=20)
     parser.add_argument("--fall-penalty", type=float, default=100.0)
-    parser.add_argument("--explore-prob", type=float, default=0.05)
+    parser.add_argument(
+        "--explore-prob",
+        type=float,
+        default=0.0,
+        help="Prawdopodobieństwo losowej akcji SAC (0 = tylko średnia polityki, domyślnie przy douczaniu).",
+    )
     parser.add_argument(
         "--updates-per-step",
         type=int,
