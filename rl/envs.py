@@ -6,6 +6,19 @@ from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
 from hardware.drive_module import DriveModule
 
 
+def _wrap_angle_rad(angle):
+    return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _angle_diff_rad(target, source):
+    return _wrap_angle_rad(target - source)
+
+
+def _accel_pitch_raw_rad(ax, az):
+    # Upright with gravity on -Z (typical mount): ax≈0, az<0 → pitch≈0, not ±π.
+    return float(np.arctan2(-ax, -az + 1e-6))
+
+
 class InvertedPendulumEnv:
     """
     Lightweight dynamics environment for fast SAC pretraining.
@@ -146,17 +159,16 @@ class RaspberryBalanceRuntime:
 
     def _read_pitch_from_acc(self):
         ax, _, az = self.imu.read_acc()
-        # Complementary estimate from acceleration vector.
-        return np.arctan2(ax, az + 1e-6) - self.accel_pitch_bias_rad
+        return _accel_pitch_raw_rad(ax, az) - self.accel_pitch_bias_rad
 
     def reset(self):
         self.drive.stop()
         self.drive.reset_encoders()
-        self.pitch = 0.0
-        self.pitch_rate = 0.0
         self.x_est = 0.0
         self.x_dot_est = 0.0
         self._last_t = time.time()
+        self.pitch = self._read_pitch_from_acc()
+        self.pitch_rate = self._read_pitch_rate_rad()
         return self._get_obs()
 
     def _get_obs(self):
@@ -166,9 +178,9 @@ class RaspberryBalanceRuntime:
 
         self.pitch_rate = self._read_pitch_rate_rad()
         pitch_acc = self._read_pitch_from_acc()
-        self.pitch = self.pitch_alpha * (self.pitch + self.pitch_rate * dt) + (
-            1.0 - self.pitch_alpha
-        ) * pitch_acc
+        pitch_gyro = _wrap_angle_rad(self.pitch + self.pitch_rate * dt)
+        acc_blend = (1.0 - self.pitch_alpha) * _angle_diff_rad(pitch_acc, pitch_gyro)
+        self.pitch = _wrap_angle_rad(pitch_gyro + acc_blend)
 
         enc_left, enc_right = self.drive.get_encoder_steps()
         steps_avg = 0.5 * (enc_left + enc_right)
@@ -208,7 +220,7 @@ class RaspberryBalanceRuntime:
             gx, _, _ = self.imu.read_gyro()
             ax, _, az = self.imu.read_acc()
             gyro_dps.append(gx / self.gyro_lsb_per_dps)
-            accel_pitch.append(np.arctan2(ax, az + 1e-6))
+            accel_pitch.append(_accel_pitch_raw_rad(ax, az))
             time.sleep(sample_dt)
 
         self.gyro_bias_dps = float(np.mean(gyro_dps))
