@@ -47,6 +47,18 @@ def _safe_save_checkpoint(agent, path):
     tmp.replace(path)
 
 
+def _wait_for_episode_start(episode_idx, total_episodes, *, after_fall=False):
+    if after_fall:
+        print("Upadek — checkpoint epizodu zapisany. Ustaw robota.")
+    try:
+        input(
+            f"Epizod {episode_idx}/{total_episodes}: naciśnij Enter, aby rozpocząć "
+            "(Ctrl+C = koniec treningu)... "
+        )
+    except EOFError:
+        raise KeyboardInterrupt from None
+
+
 def run_online_training(args):
     if torch is None:
         print("PyTorch is required for online_train_pi.py", file=sys.stderr)
@@ -122,11 +134,16 @@ def run_online_training(args):
     episode_idx = 1
     last_save_t = time.time()
 
+    manual = not args.auto_episodes
     print(
         f"Online SAC on {torch.device('cpu')} | batch={args.batch_size} | "
         f"hidden={hidden_dim} | Ctrl+C to stop."
     )
+    if manual:
+        print("Tryb ręczny: każdy epizod startuje po Enter; po upadku zapis checkpointu.")
     try:
+        if manual:
+            _wait_for_episode_start(episode_idx, args.episodes)
         while episode_idx <= args.episodes:
             if np.random.rand() < args.explore_prob:
                 action = agent.act(obs, deterministic=False)
@@ -136,6 +153,7 @@ def run_online_training(args):
             next_obs, _, done = env.step(action)
             reward = compute_online_reward(next_obs, action, env.fall_angle_rad)
             if done:
+                env.drive.stop()
                 reward -= args.fall_penalty
 
             agent.remember(obs, action, reward, next_obs, float(done))
@@ -181,15 +199,29 @@ def run_online_training(args):
                     _safe_save_checkpoint(agent, best_ckpt)
                     print(f"New best online checkpoint: {best_ckpt} (avg={best_avg:.2f})")
 
+                fell = done
+                if fell:
+                    _safe_save_checkpoint(agent, latest_ckpt)
+                    ep_ckpt = save_dir / f"sac_online_ep_{episode_idx:04d}.pt"
+                    _safe_save_checkpoint(agent, ep_ckpt)
+                    print(f"Fall — saved: {latest_ckpt} and {ep_ckpt}")
+
                 now = time.time()
                 if now - last_save_t >= args.save_interval_sec:
                     _safe_save_checkpoint(agent, latest_ckpt)
                     print(f"Periodic checkpoint saved: {latest_ckpt}")
                     last_save_t = now
 
-                obs = env.reset()
                 episode_reward = 0.0
                 episode_step = 0
+                if episode_idx >= args.episodes:
+                    break
+
+                if manual:
+                    _wait_for_episode_start(
+                        episode_idx + 1, args.episodes, after_fall=fell
+                    )
+                obs = env.reset()
                 episode_idx += 1
     except KeyboardInterrupt:
         print("\nStopped by user, saving latest checkpoint...")
@@ -250,6 +282,11 @@ def parse_args():
         help="Override network width; default: auto from actor checkpoint (usually 256).",
     )
     parser.add_argument("--save-interval-sec", type=int, default=120)
+    parser.add_argument(
+        "--auto-episodes",
+        action="store_true",
+        help="Start next episode immediately (no Enter between episodes).",
+    )
     args = parser.parse_args()
 
     if args.resume and args.resume_checkpoint is None:
