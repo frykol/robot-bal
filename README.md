@@ -35,7 +35,18 @@ These values are used as:
 python train_sim.py --episodes 1000 --max-steps 1000
 ```
 
-This saves actor weights to `artifacts/actor_sim.pt`.
+Compare multiple runs in separate folders:
+
+```bash
+python train_sim.py --run-name h16_baseline --hidden-dim 16 --com-height-m 0.11
+python train_sim.py --run-name h64_low_com --hidden-dim 64 --com-height-m 0.09
+python train_sim.py --auto-run-name --hidden-dim 32 --com-height-m 0.10
+```
+
+Each run directory (under `artifacts/runs/` by default) contains:
+`actor_sim.pt`, `actor_best.pt`, `learning_curve.png`, `checkpoints/`, `run_config.json`.
+
+This saves actor weights to `artifacts/actor_sim.pt` when no `--run-dir` / `--run-name` is used.
 It also saves a learning plot to `artifacts/learning_curve.png`.
 Best rolling-average checkpoint is saved to `artifacts/actor_best.pt`.
 Periodic checkpoints are saved to `artifacts/checkpoints/`.

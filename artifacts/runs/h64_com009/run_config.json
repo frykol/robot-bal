@@ -1,0 +1,14 @@
+{
+  "com_height_m": 0.11,
+  "domain_randomization": true,
+  "episodes": 1000,
+  "hidden_dim": 64,
+  "max_steps": 1000,
+  "plot_path": "artifacts/runs/h64_com009/learning_curve.png",
+  "rolling_window": 50,
+  "run_dir": "artifacts/runs/h64_com009",
+  "save_every": 50,
+  "save_path": "artifacts/runs/h64_com009/actor_sim.pt",
+  "started_at_utc": "2026-05-28T20:21:15.368144+00:00",
+  "train_fall_angle_deg": 30.0
+}

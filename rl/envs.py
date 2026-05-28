@@ -2,9 +2,6 @@ import time
 
 import numpy as np
 
-from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
-from hardware.drive_module import DriveModule
-
 
 def _wrap_angle_rad(angle):
     return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
@@ -126,12 +123,18 @@ class RaspberryBalanceRuntime:
         motor_scale=0.8,
         loop_hz=100,
         pitch_alpha=0.98,
-        gyro_lsb_per_dps=GYR_LSB_PER_DPS,
+        gyro_lsb_per_dps=None,
         encoder_step_to_m=0.0005,
         gyro_bias_dps=0.0,
         accel_pitch_bias_rad=0.0,
         fall_angle_deg=25.0,
     ):
+        from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
+        from hardware.drive_module import DriveModule
+
+        if gyro_lsb_per_dps is None:
+            gyro_lsb_per_dps = GYR_LSB_PER_DPS
+
         self.imu = BMI160(bus_id=bus_id)
         self.drive = DriveModule()
         self.motor_scale = float(motor_scale)

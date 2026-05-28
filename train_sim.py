@@ -1,4 +1,6 @@
 import argparse
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -6,6 +8,63 @@ import numpy as np
 
 from rl.envs import InvertedPendulumEnv
 from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent
+
+DEFAULT_RUNS_ROOT = Path("artifacts") / "runs"
+
+
+def make_auto_run_name(
+    hidden_dim,
+    com_height_m,
+    train_fall_angle_deg,
+    no_domain_randomization,
+    episodes,
+):
+    dr = "dr" if not no_domain_randomization else "nodr"
+    return (
+        f"h{hidden_dim}_com{com_height_m:.3f}_fall{int(train_fall_angle_deg)}"
+        f"_{dr}_ep{episodes}"
+    )
+
+
+def resolve_run_paths(args):
+    """
+    Pick output directory and standard filenames for a training run.
+
+    Priority: --run-dir > --run-name > --auto-run-name > legacy artifacts/.
+    Explicit --save-path / --plot-path override only the filenames inside run dir.
+    """
+    if args.run_dir is not None:
+        run_dir = Path(args.run_dir)
+    elif args.run_name is not None:
+        run_dir = DEFAULT_RUNS_ROOT / args.run_name
+    elif args.auto_run_name:
+        slug = make_auto_run_name(
+            args.hidden_dim,
+            args.com_height_m,
+            args.train_fall_angle_deg,
+            args.no_domain_randomization,
+            args.episodes,
+        )
+        run_dir = DEFAULT_RUNS_ROOT / slug
+    else:
+        return args.save_path, args.plot_path, None
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    save_path = run_dir / "actor_sim.pt"
+    plot_path = run_dir / "learning_curve.png"
+    if args.save_path != Path("artifacts") / "actor_sim.pt":
+        save_path = args.save_path
+    if args.plot_path != Path("artifacts") / "learning_curve.png":
+        plot_path = args.plot_path
+    return save_path, plot_path, run_dir
+
+
+def save_run_config(run_dir, config):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    config_path = run_dir / "run_config.json"
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+    print(f"Saved run config: {config_path}")
 
 
 def train(
@@ -21,7 +80,11 @@ def train(
     no_domain_randomization,
     com_height_m,
     hidden_dim,
+    run_dir=None,
 ):
+    if run_dir is not None:
+        print(f"Run output directory: {run_dir.resolve()}")
+
     env = InvertedPendulumEnv(
         fall_angle_deg=train_fall_angle_deg,
         domain_randomization=not no_domain_randomization,
@@ -115,7 +178,8 @@ def save_learning_plot(rewards, plot_path, rolling_window):
     plt.figure(figsize=(10, 5))
     plt.plot(episodes, rewards_arr, label="Reward / episode", alpha=0.4)
     plt.plot(episodes, rolling, label=f"Rolling avg ({rolling_window})", linewidth=2.0)
-    plt.title("SAC Learning Curve")
+    title = plot_path.parent.name if plot_path.parent.name else "SAC Learning Curve"
+    plt.title(f"SAC Learning Curve — {title}")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.grid(True, alpha=0.3)
@@ -244,16 +308,55 @@ def parse_args():
         default=DEFAULT_HIDDEN_DIM,
         help="Liczba neuronów w warstwach ukrytych actor/critic.",
     )
+    run_group = parser.add_mutually_exclusive_group()
+    run_group.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="Katalog na ten trening (actor_*.pt, wykres, checkpoints/, run_config.json).",
+    )
+    run_group.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help=f"Skrót: zapis do {DEFAULT_RUNS_ROOT}/<nazwa>/ (np. h64_com010).",
+    )
+    run_group.add_argument(
+        "--auto-run-name",
+        action="store_true",
+        help="Katalog z nazwy z parametrów (hidden, com, fall, dr, episodes).",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    save_path, plot_path, run_dir = resolve_run_paths(args)
+
+    if run_dir is not None:
+        save_run_config(
+            run_dir,
+            {
+                "started_at_utc": datetime.now(timezone.utc).isoformat(),
+                "run_dir": str(run_dir),
+                "episodes": args.episodes,
+                "max_steps": args.max_steps,
+                "rolling_window": args.rolling_window,
+                "save_every": args.save_every,
+                "hidden_dim": args.hidden_dim,
+                "com_height_m": args.com_height_m,
+                "train_fall_angle_deg": args.train_fall_angle_deg,
+                "domain_randomization": not args.no_domain_randomization,
+                "save_path": str(save_path),
+                "plot_path": str(plot_path),
+            },
+        )
+
     train(
         args.episodes,
         args.max_steps,
-        args.save_path,
-        args.plot_path,
+        save_path,
+        plot_path,
         args.rolling_window,
         args.save_every,
         not args.no_live_plot,
@@ -262,5 +365,6 @@ if __name__ == "__main__":
         args.no_domain_randomization,
         args.com_height_m,
         args.hidden_dim,
+        run_dir=run_dir,
     )
 
