@@ -24,11 +24,18 @@ python train_sim.py --episodes 1000 --max-steps 1000
 
 Po treningu dostaniesz:
 - artifacts/actor_sim.pt            (wagi policy)
+- artifacts/actor_best.pt           (najlepszy model wg Avg50)
 - artifacts/learning_curve.png      (wykres uczenia)
+- artifacts/checkpoints/*.pt        (checkpointy epizodowe)
 
 Jeśli chcesz gładszą średnią kroczącą na wykresie:
 
 python train_sim.py --rolling-window 100
+
+Próg upadku i randomizacja:
+
+python train_sim.py --train-fall-angle-deg 25
+python train_sim.py --no-domain-randomization
 
 ----------------------------------------------------------------------------
 2) PRZYGOTOWANIE RASPBERRY PI

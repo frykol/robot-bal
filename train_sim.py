@@ -17,11 +17,19 @@ def train(
     save_every,
     live_plot_enabled,
     plot_update_every,
+    train_fall_angle_deg,
+    no_domain_randomization,
 ):
-    env = InvertedPendulumEnv()
+    env = InvertedPendulumEnv(
+        fall_angle_deg=train_fall_angle_deg,
+        domain_randomization=not no_domain_randomization,
+    )
     agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim)
 
     rewards = []
+    best_avg = -np.inf
+    best_path = save_path.with_name("actor_best.pt")
+    checkpoint_dir = save_path.parent / "checkpoints"
     live_plot = LivePlotter(
         rolling_window=rolling_window,
         enabled=live_plot_enabled,
@@ -51,8 +59,22 @@ def train(
             )
             live_plot.update(rewards, force=(ep == 1))
 
+            if rolling > best_avg:
+                best_avg = rolling
+                best_path.parent.mkdir(parents=True, exist_ok=True)
+                agent.save_actor(str(best_path))
+                print(f"New best checkpoint: {best_path} (Avg{rolling_window}={best_avg:.2f})")
+
             if save_every > 0 and ep % save_every == 0:
-                persist_training_state(agent, rewards, save_path, plot_path, rolling_window)
+                checkpoint_path = checkpoint_dir / f"actor_ep{ep:04d}.pt"
+                persist_training_state(
+                    agent,
+                    rewards,
+                    save_path,
+                    plot_path,
+                    rolling_window,
+                    checkpoint_path=checkpoint_path,
+                )
                 print(f"Checkpoint saved at episode {ep}")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user (Ctrl+C). Saving current state...")
@@ -60,12 +82,20 @@ def train(
         persist_training_state(agent, rewards, save_path, plot_path, rolling_window)
         live_plot.close()
         print(f"Saved training state after {completed_episodes} episodes.")
+        if best_avg > -np.inf:
+            print(f"Best rolling average: {best_avg:.2f} -> {best_path}")
 
 
-def persist_training_state(agent, rewards, save_path, plot_path, rolling_window):
+def persist_training_state(
+    agent, rewards, save_path, plot_path, rolling_window, checkpoint_path=None
+):
     save_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save_actor(str(save_path))
     print(f"Saved actor weights: {save_path}")
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        agent.save_actor(str(checkpoint_path))
+        print(f"Saved episode checkpoint: {checkpoint_path}")
     save_learning_plot(rewards, plot_path, rolling_window)
 
 
@@ -188,6 +218,17 @@ def parse_args():
         default=5,
         help="Update live plot every N episodes.",
     )
+    parser.add_argument(
+        "--train-fall-angle-deg",
+        type=float,
+        default=30.0,
+        help="Fall angle threshold used in simulation training environment.",
+    )
+    parser.add_argument(
+        "--no-domain-randomization",
+        action="store_true",
+        help="Disable sim domain randomization (not recommended for transfer).",
+    )
     return parser.parse_args()
 
 
@@ -202,5 +243,7 @@ if __name__ == "__main__":
         args.save_every,
         not args.no_live_plot,
         args.plot_update_every,
+        args.train_fall_angle_deg,
+        args.no_domain_randomization,
     )
 

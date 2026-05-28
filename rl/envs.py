@@ -14,29 +14,49 @@ class InvertedPendulumEnv:
     Action: normalized in [-1, 1], internally scaled to force.
     """
 
-    def __init__(self):
+    def __init__(self, fall_angle_deg=30.0, domain_randomization=True):
         self.g = 9.81
 
         # Component masses from user-provided data:
         # motors: 2 x 160g, rpi: 55g, case: 466g, battery: 250g.
-        self.m = 0.320  # wheels+motors [kg]
-        self.M = 0.771  # body [kg]
+        self.m_nominal = 0.320  # wheels+motors [kg]
+        self.M_nominal = 0.771  # body [kg]
 
-        self.l = 0.15
+        self.l_nominal = 0.15
         self.dt = 0.01
-        self.force_max = 10.0
-        self.theta_max = np.radians(35)
+        self.force_max_nominal = 10.0
+        self.theta_max = np.radians(float(fall_angle_deg))
+        self.domain_randomization = bool(domain_randomization)
 
         self.state = None
+        self.m = self.m_nominal
+        self.M = self.M_nominal
+        self.l = self.l_nominal
+        self.force_max = self.force_max_nominal
         self.obs_dim = 4
         self.act_dim = 1
         self.reset()
 
     def reset(self):
+        self._resample_dynamics()
         self.state = np.array([0.0, 0.0, np.radians(np.random.uniform(-2, 2)), 0.0])
         if np.random.rand() < 0.05:
             self.state[3] += np.random.uniform(-0.5, 0.5)
         return self._to_obs(self.state)
+
+    def _resample_dynamics(self):
+        if not self.domain_randomization:
+            self.m = self.m_nominal
+            self.M = self.M_nominal
+            self.l = self.l_nominal
+            self.force_max = self.force_max_nominal
+            return
+
+        # Sim-to-real randomization for better transfer robustness.
+        self.m = self.m_nominal * np.random.uniform(0.9, 1.1)
+        self.M = self.M_nominal * np.random.uniform(0.9, 1.1)
+        self.l = self.l_nominal * np.random.uniform(0.9, 1.1)
+        self.force_max = self.force_max_nominal * np.random.uniform(0.85, 1.15)
 
     def _to_obs(self, state):
         x, x_dot, theta, theta_dot = state
@@ -90,6 +110,7 @@ class RaspberryBalanceRuntime:
         encoder_step_to_m=0.0005,
         gyro_bias_dps=0.0,
         accel_pitch_bias_rad=0.0,
+        fall_angle_deg=25.0,
     ):
         self.imu = BMI160(bus_id=bus_id)
         self.drive = DriveModule()
@@ -100,6 +121,7 @@ class RaspberryBalanceRuntime:
         self.encoder_step_to_m = float(encoder_step_to_m)
         self.gyro_bias_dps = float(gyro_bias_dps)
         self.accel_pitch_bias_rad = float(accel_pitch_bias_rad)
+        self.fall_angle_rad = np.radians(float(fall_angle_deg))
 
         self.pitch = 0.0
         self.pitch_rate = 0.0
@@ -161,7 +183,7 @@ class RaspberryBalanceRuntime:
 
         time.sleep(self.loop_dt)
         obs = self._get_obs()
-        done = abs(obs[0]) > np.radians(35)
+        done = abs(obs[0]) > self.fall_angle_rad
         reward = 0.0
         return obs, reward, done
 

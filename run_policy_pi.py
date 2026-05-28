@@ -34,6 +34,7 @@ def run(
         loop_hz=loop_hz,
         gyro_bias_dps=float(calibration.get("gyro_bias_dps", 0.0)),
         accel_pitch_bias_rad=float(calibration.get("accel_pitch_bias_rad", 0.0)),
+        fall_angle_deg=tilt_limit_deg,
     )
     agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim)
     agent.load_actor(actor_path)

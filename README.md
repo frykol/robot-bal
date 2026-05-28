@@ -36,11 +36,20 @@ python train_sim.py --episodes 1000 --max-steps 1000
 
 This saves actor weights to `artifacts/actor_sim.pt`.
 It also saves a learning plot to `artifacts/learning_curve.png`.
+Best rolling-average checkpoint is saved to `artifacts/actor_best.pt`.
+Periodic checkpoints are saved to `artifacts/checkpoints/`.
 
 Optional plotting args:
 
 ```bash
 python train_sim.py --plot-path artifacts/my_curve.png --rolling-window 100
+```
+
+Set training fall angle and randomization behavior:
+
+```bash
+python train_sim.py --train-fall-angle-deg 25
+python train_sim.py --no-domain-randomization
 ```
 
 ## Export policy
