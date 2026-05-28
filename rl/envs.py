@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from hardware.accelerometer import BMI160
+from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
 from hardware.drive_module import DriveModule
 
 
@@ -113,7 +113,7 @@ class RaspberryBalanceRuntime:
         motor_scale=0.8,
         loop_hz=100,
         pitch_alpha=0.98,
-        gyro_lsb_per_dps=131.0,
+        gyro_lsb_per_dps=GYR_LSB_PER_DPS,
         encoder_step_to_m=0.0005,
         gyro_bias_dps=0.0,
         accel_pitch_bias_rad=0.0,
