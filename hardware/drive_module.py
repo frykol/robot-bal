@@ -28,12 +28,12 @@ class DriveModule:
         self.encoder2.steps = 0
 
     def forward(self, speed=0.5):
-        self.motor1.forward(speed)
-        self.motor2.forward(speed)
-
-    def backward(self, speed=0.5):
         self.motor1.backward(speed)
         self.motor2.backward(speed)
+
+    def backward(self, speed=0.5):
+        self.motor1.forward(speed)
+        self.motor2.forward(speed)
 
     def stop(self):
         self.motor1.stop()
