@@ -1,0 +1,161 @@
+TUTORIAL: SAC BALANCING ROBOT - OD TRENINGU DO RASPBERRY PI
+============================================================
+
+Ten tutorial zakłada, że masz już to repo lokalnie oraz działające:
+- IMU BMI160
+- sterownik silników (DriveModule)
+- enkodery
+
+----------------------------------------------------------------------------
+0) SZYBKIE TL;DR (kolejność)
+----------------------------------------------------------------------------
+1. Wytrenuj model w symulacji: train_sim.py
+2. Skopiuj repo + artifacts/actor_sim.pt na Raspberry Pi
+3. Zrób kalibrację IMU: calibrate_pi.py
+4. Odpal policy w trybie safe: run_policy_pi.py
+5. Zbieraj logi CSV i strojenie powtarzaj
+
+----------------------------------------------------------------------------
+1) TRENING W SYMULACJI (NA KOMPUTERZE)
+----------------------------------------------------------------------------
+Uruchom trening:
+
+python train_sim.py --episodes 1000 --max-steps 1000
+
+Po treningu dostaniesz:
+- artifacts/actor_sim.pt            (wagi policy)
+- artifacts/learning_curve.png      (wykres uczenia)
+
+Jeśli chcesz gładszą średnią kroczącą na wykresie:
+
+python train_sim.py --rolling-window 100
+
+----------------------------------------------------------------------------
+2) PRZYGOTOWANIE RASPBERRY PI
+----------------------------------------------------------------------------
+Na Raspberry:
+
+1) Skopiuj repo (np. git clone albo scp)
+2) Wejdź do katalogu projektu
+3) Utwórz i aktywuj venv:
+
+python -m venv .venv
+source .venv/bin/activate
+
+4) Zainstaluj pakiety:
+
+pip install -r requirements.txt
+
+Uwaga:
+- Jeśli instalacja torch sprawia problemy na RPi, dobierz wersję torch
+  zgodną z architekturą i Pythonem na Twoim Raspberry.
+
+----------------------------------------------------------------------------
+3) SZYBKI TEST SPRZĘTU (PRZED POLICY)
+----------------------------------------------------------------------------
+Uruchom:
+
+python main.py
+
+Sprawdź:
+- czy IMU zwraca sensowne wartości (nie same zera, nie absurdalne skoki),
+- czy silniki jadą w poprawnym kierunku,
+- czy enkodery liczą kroki.
+
+Jeśli coś jest odwrotnie:
+- zamień kierunek w sterowaniu silników albo znaki osi w odczycie.
+
+----------------------------------------------------------------------------
+4) KALIBRACJA IMU (ROBOT MA STAĆ NIERUCHOMO)
+----------------------------------------------------------------------------
+Uruchom:
+
+python calibrate_pi.py --output-path artifacts/pi_calibration.json
+
+To zapisze biasy:
+- gyro_bias_dps
+- accel_pitch_bias_rad
+
+Plik kalibracji jest automatycznie używany przez run_policy_pi.py
+(domyślna ścieżka: artifacts/pi_calibration.json).
+
+----------------------------------------------------------------------------
+5) BEZPIECZNE PIERWSZE URUCHOMIENIE POLICY
+----------------------------------------------------------------------------
+Start:
+
+python run_policy_pi.py \
+  --actor-path artifacts/actor_sim.pt \
+  --profile safe \
+  --tilt-limit-deg 20 \
+  --log-path logs/run_001.csv
+
+Co robią flagi:
+- --profile safe        mały motor_scale (bezpieczny start)
+- --tilt-limit-deg 20   szybki stop, gdy wychylenie za duże
+- --log-path ...csv     zapis telemetrii do analizy
+
+Profile:
+- safe        ostrożny (najpierw zawsze ten)
+- normal      mocniejszy
+- aggressive  najmocniejszy (na końcu, po strojeniu)
+
+----------------------------------------------------------------------------
+6) CO TUNOWAĆ, JEŚLI NIE TRZYMA PIONU
+----------------------------------------------------------------------------
+Najczęstsze przyczyny:
+
+1. Zły znak osi (IMU lub silniki)
+   - objaw: robot "ucieka" od pionu natychmiast po starcie.
+
+2. Zła skala gyro
+   - objaw: zbyt nerwowa albo spóźniona reakcja.
+   - miejsce: rl/envs.py -> gyro_lsb_per_dps / _read_pitch_rate_rad
+
+3. Zła skala enkoderów
+   - objaw: policy "myśli", że jedzie wolniej/szybciej niż naprawdę.
+   - miejsce: rl/envs.py -> encoder_step_to_m
+
+4. Za duża moc na start
+   - objaw: oscylacje i szybki upadek.
+   - rozwiązanie: profil safe + niższy tilt-limit + testy krótkie.
+
+----------------------------------------------------------------------------
+7) ITERACJA SIM-TO-REAL (BARDZO WAŻNE)
+----------------------------------------------------------------------------
+Po każdym teście:
+1) Obejrzyj log CSV
+2) Dostosuj parametry (biasy, skale, czas pętli)
+3) Dostosuj symulację (szum/opóźnienia/parametry)
+4) Dotrenuj model
+5) Powtórz test na RPi
+
+To jest standardowy proces - zwykle potrzeba kilku iteracji.
+
+----------------------------------------------------------------------------
+8) FAQ: "CZY WYŻSZA NAGRODA = LEPIEJ?"
+----------------------------------------------------------------------------
+W TYM PROJEKCIE: TAK, generalnie wyższa nagroda oznacza lepsze zachowanie.
+
+Dlaczego:
+- w symulacji kara rośnie za duży kąt i oddalenie,
+- terminalny upadek ma mocną karę ujemną,
+- więc policy z wyższą nagrodą zwykle:
+  - dłużej utrzymuje pion,
+  - mniej się wychyla,
+  - stabilniej pracuje.
+
+Ale uwaga praktyczna:
+- patrz na trend (średnia krocząca), nie na pojedynczy epizod,
+- porównuj także zachowanie na realnym robocie (sim != real),
+- czasem nagroda rośnie, ale policy nadal jest za agresywna na prawdziwym sprzęcie.
+
+----------------------------------------------------------------------------
+9) REKOMENDOWANA PROCEDURA BEZPIECZEŃSTWA
+----------------------------------------------------------------------------
+- testy zaczynaj z podparciem albo na miękkim podłożu,
+- miej fizyczny kill-switch / szybkie odłączenie zasilania silników,
+- nie zaczynaj od profilu aggressive,
+- pierwsze próby rób krótkie (kilka sekund), potem wydłużaj.
+
+KONIEC

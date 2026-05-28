@@ -1,0 +1,95 @@
+# robot-bal
+
+This repository now includes a full SAC pipeline for a balancing robot:
+
+- fast pretraining in a virtual inverted pendulum environment,
+- reusable SAC agent implementation,
+- Raspberry Pi runtime using existing hardware abstraction (`BMI160`, `DriveModule`),
+- model export for deployment.
+
+## Files added
+
+- `rl/sac.py` - SAC agent, actor, critics, replay buffer.
+- `rl/envs.py` - training env (`InvertedPendulumEnv`) + deployment runtime (`RaspberryBalanceRuntime`).
+- `train_sim.py` - simulation pretraining.
+- `export_actor.py` - TorchScript export for deterministic deployment.
+- `run_policy_pi.py` - runs learned policy on Raspberry Pi.
+- `calibrate_pi.py` - stationary IMU calibration on Raspberry Pi.
+
+## Mass model used in simulation
+
+From provided hardware masses:
+
+- motors: `2 x 160g = 320g`,
+- body (Raspberry + case + battery): `55g + 466g + 250g = 771g`.
+
+These values are used as:
+
+- `m = 0.320 kg` (wheel/motor mass),
+- `M = 0.771 kg` (body mass).
+
+## Train in virtual environment
+
+```bash
+python train_sim.py --episodes 1000 --max-steps 1000
+```
+
+This saves actor weights to `artifacts/actor_sim.pt`.
+It also saves a learning plot to `artifacts/learning_curve.png`.
+
+Optional plotting args:
+
+```bash
+python train_sim.py --plot-path artifacts/my_curve.png --rolling-window 100
+```
+
+## Export policy
+
+```bash
+python export_actor.py --weights-path artifacts/actor_sim.pt --output-path artifacts/policy.ts
+```
+
+## Run on Raspberry Pi
+
+```bash
+python run_policy_pi.py --actor-path artifacts/actor_sim.pt --profile safe
+```
+
+Important before first real run:
+
+- tune `gyro` and `encoder` scaling in `rl/envs.py` (`_read_pitch_rate_rad`, `_get_obs`),
+- verify motor polarity and safe PWM range (`motor_scale`),
+- keep an external safety stop during initial tests.
+
+### Calibration and safety
+
+First run IMU calibration while robot is not moving:
+
+```bash
+python calibrate_pi.py --output-path artifacts/pi_calibration.json
+```
+
+Runtime now supports:
+
+- motor profiles: `safe`, `normal`, `aggressive`,
+- safety cutoff: `--tilt-limit-deg` (default 25),
+- CSV logs: `--log-path logs/run_latest.csv`.
+
+Example:
+
+```bash
+python run_policy_pi.py \
+  --actor-path artifacts/actor_sim.pt \
+  --profile safe \
+  --tilt-limit-deg 20 \
+  --log-path logs/run_001.csv
+```
+
+## Suggested sim-to-real path
+
+1. Train in `InvertedPendulumEnv` until stable average rewards.
+2. Run low-power closed-loop tests on Raspberry with deterministic policy.
+3. Log real trajectories (`pitch`, `pitch_rate`, encoder speed, action).
+4. Update simulation parameters/noise from logs and retrain.
+5. Repeat until robust.
+
