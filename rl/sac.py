@@ -11,11 +11,38 @@ from torch.distributions import Normal
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _torch_load(path):
+def _torch_load(path, full_checkpoint=False):
     try:
-        return torch.load(path, map_location=DEVICE, weights_only=True)
+        return torch.load(
+            path,
+            map_location=DEVICE,
+            weights_only=not full_checkpoint,
+        )
     except TypeError:
         return torch.load(path, map_location=DEVICE)
+
+
+def infer_dims_from_actor_file(path):
+    """
+    Read obs_dim, act_dim, hidden_dim from actor-only or full SAC checkpoint.
+    """
+    payload = _torch_load(path, full_checkpoint=True)
+    if isinstance(payload, dict) and "actor" in payload:
+        meta = payload.get("meta", {})
+        if meta.get("hidden_dim") is not None:
+            return (
+                int(meta["obs_dim"]),
+                int(meta["act_dim"]),
+                int(meta["hidden_dim"]),
+            )
+        state = payload["actor"]
+    else:
+        state = payload
+
+    hidden_dim = int(state["net.0.weight"].shape[0])
+    obs_dim = int(state["net.0.weight"].shape[1])
+    act_dim = int(state["mean.weight"].shape[0])
+    return obs_dim, act_dim, hidden_dim
 
 
 class SquashedGaussianActor(nn.Module):

@@ -16,7 +16,7 @@ except ImportError:
     torch = None
 
 from rl.envs import RaspberryBalanceRuntime
-from rl.sac import SACAgent
+from rl.sac import SACAgent, infer_dims_from_actor_file
 
 
 def _profile_to_motor_scale(profile):
@@ -64,23 +64,42 @@ def run_online_training(args):
         fall_angle_deg=args.tilt_limit_deg,
     )
 
+    resume_path = args.resume_checkpoint
+    weights_path = resume_path if (resume_path is not None and resume_path.exists()) else args.actor_path
+
+    if not weights_path.exists():
+        print(f"Missing weights: {weights_path}", file=sys.stderr)
+        sys.exit(1)
+
+    ckpt_obs, ckpt_act, ckpt_hidden = infer_dims_from_actor_file(weights_path)
+    if args.hidden_dim is not None and args.hidden_dim != ckpt_hidden:
+        print(
+            f"Error: --hidden-dim {args.hidden_dim} does not match checkpoint ({ckpt_hidden}). "
+            "Remove --hidden-dim to auto-detect.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    hidden_dim = ckpt_hidden
+    if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
+        print(
+            f"Warning: checkpoint dims ({ckpt_obs},{ckpt_act}) != env ({env.obs_dim},{env.act_dim})",
+            file=sys.stderr,
+        )
+    print(f"Using hidden_dim={hidden_dim} (checkpoint actor uses {ckpt_hidden})")
+
     agent = SACAgent(
         obs_dim=env.obs_dim,
         act_dim=env.act_dim,
         lr=args.lr,
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
-        hidden_dim=args.hidden_dim,
+        hidden_dim=hidden_dim,
     )
 
-    resume_path = args.resume_checkpoint
     if resume_path is not None and resume_path.exists():
         agent.load_checkpoint(str(resume_path), load_optimizers=True)
         print(f"Loaded SAC checkpoint: {resume_path}")
     else:
-        if not args.actor_path.exists():
-            print(f"Missing actor weights: {args.actor_path}", file=sys.stderr)
-            sys.exit(1)
         agent.load_actor_for_training(str(args.actor_path))
         print(f"Loaded actor for online training: {args.actor_path}")
         print(
@@ -224,7 +243,12 @@ def parse_args():
     )
     parser.add_argument("--buffer-size", type=int, default=10_000)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=None,
+        help="Override network width; default: auto from actor checkpoint (usually 256).",
+    )
     parser.add_argument("--save-interval-sec", type=int, default=120)
     args = parser.parse_args()
 
