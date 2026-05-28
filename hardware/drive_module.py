@@ -5,7 +5,7 @@ class DriveModule:
     def __init__(
         self,
         motor1_pins=(20, 21),
-        motor2_pins=(23, 24),
+        motor2_pins=(24, 23),
         encoder1_pins=(5, 6),
         encoder2_pins=(13, 19),
     ):
