@@ -16,7 +16,7 @@ except ImportError:
     torch = None
 
 from rl.envs import RaspberryBalanceRuntime
-from rl.sac import SACAgent, infer_dims_from_actor_file
+from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent, infer_dims_from_actor_file
 
 
 def _profile_to_motor_scale(profile):
@@ -83,21 +83,25 @@ def run_online_training(args):
         print(f"Missing weights: {weights_path}", file=sys.stderr)
         sys.exit(1)
 
-    ckpt_obs, ckpt_act, ckpt_hidden = infer_dims_from_actor_file(weights_path)
-    if args.hidden_dim is not None and args.hidden_dim != ckpt_hidden:
-        print(
-            f"Error: --hidden-dim {args.hidden_dim} does not match checkpoint ({ckpt_hidden}). "
-            "Remove --hidden-dim to auto-detect.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    hidden_dim = ckpt_hidden
+    if resume_path is not None and resume_path.exists():
+        ckpt_obs, ckpt_act, hidden_dim = infer_dims_from_actor_file(resume_path)
+    else:
+        ckpt_obs, ckpt_act, ckpt_hidden = infer_dims_from_actor_file(weights_path)
+        hidden_dim = args.hidden_dim
+        if ckpt_hidden != hidden_dim:
+            print(
+                f"Error: actor ma hidden_dim={ckpt_hidden}, a agent budowany z {hidden_dim}. "
+                f"Dotrenuj nowy model w symulacji (--hidden-dim {hidden_dim}) "
+                f"lub podaj --hidden-dim {ckpt_hidden}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
         print(
             f"Warning: checkpoint dims ({ckpt_obs},{ckpt_act}) != env ({env.obs_dim},{env.act_dim})",
             file=sys.stderr,
         )
-    print(f"Using hidden_dim={hidden_dim} (checkpoint actor uses {ckpt_hidden})")
+    print(f"Using hidden_dim={hidden_dim}")
 
     agent = SACAgent(
         obs_dim=env.obs_dim,
@@ -179,7 +183,7 @@ def run_online_training(args):
                         print(
                             "\nTypical on Raspberry Pi: illegal instruction from PyTorch "
                             "or out of memory. Try:\n"
-                            "  --batch-size 16 --hidden-dim 64 --updates-per-step 0\n"
+                            "  --batch-size 16 --updates-per-step 0\n"
                             "  (collect data only) or reinstall torch from piwheels.\n",
                             file=sys.stderr,
                         )
@@ -288,8 +292,8 @@ def parse_args():
     parser.add_argument(
         "--hidden-dim",
         type=int,
-        default=None,
-        help="Override network width; default: auto from actor checkpoint (usually 256).",
+        default=DEFAULT_HIDDEN_DIM,
+        help="Liczba neuronów w warstwach ukrytych (musi zgadzać się z actor checkpoint).",
     )
     parser.add_argument("--save-interval-sec", type=int, default=120)
     parser.add_argument(

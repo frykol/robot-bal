@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from rl.envs import InvertedPendulumEnv
-from rl.sac import SACAgent
+from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent
 
 
 def train(
@@ -20,13 +20,14 @@ def train(
     train_fall_angle_deg,
     no_domain_randomization,
     com_height_m,
+    hidden_dim,
 ):
     env = InvertedPendulumEnv(
         fall_angle_deg=train_fall_angle_deg,
         domain_randomization=not no_domain_randomization,
         com_height_m=com_height_m,
     )
-    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim)
+    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dim=hidden_dim)
 
     rewards = []
     best_avg = -np.inf
@@ -237,6 +238,12 @@ def parse_args():
         default=0.11,
         help="Axle-to-center-of-mass distance in meters for training dynamics.",
     )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=DEFAULT_HIDDEN_DIM,
+        help="Liczba neuronów w warstwach ukrytych actor/critic.",
+    )
     return parser.parse_args()
 
 
@@ -254,5 +261,6 @@ if __name__ == "__main__":
         args.train_fall_angle_deg,
         args.no_domain_randomization,
         args.com_height_m,
+        args.hidden_dim,
     )
 

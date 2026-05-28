@@ -10,6 +10,8 @@ from torch.distributions import Normal
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+DEFAULT_HIDDEN_DIM = 16
+
 
 def _torch_load(path, full_checkpoint=False):
     try:
@@ -46,7 +48,7 @@ def infer_dims_from_actor_file(path):
 
 
 class SquashedGaussianActor(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_dim=256):
+    def __init__(self, obs_dim, act_dim, hidden_dim=DEFAULT_HIDDEN_DIM):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -77,7 +79,7 @@ class SquashedGaussianActor(nn.Module):
 
 
 class QNetwork(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_dim=256):
+    def __init__(self, obs_dim, act_dim, hidden_dim=DEFAULT_HIDDEN_DIM):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim + act_dim, hidden_dim),
@@ -122,7 +124,7 @@ class SACAgent:
         tau=0.005,
         alpha=0.2,
         lr=3e-4,
-        hidden_dim=256,
+        hidden_dim=DEFAULT_HIDDEN_DIM,
         buffer_size=100_000,
         batch_size=256,
     ):

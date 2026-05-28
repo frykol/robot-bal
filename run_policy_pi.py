@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from rl.envs import RaspberryBalanceRuntime
-from rl.sac import SACAgent
+from rl.sac import SACAgent, infer_dims_from_actor_file
 
 
 def _profile_to_motor_scale(profile):
@@ -36,7 +36,8 @@ def run(
         accel_pitch_bias_rad=float(calibration.get("accel_pitch_bias_rad", 0.0)),
         fall_angle_deg=tilt_limit_deg,
     )
-    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim)
+    _, _, hidden_dim = infer_dims_from_actor_file(Path(actor_path))
+    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dim=hidden_dim)
     agent.load_actor(actor_path)
 
     csv_file = None

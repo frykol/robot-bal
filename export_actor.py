@@ -3,11 +3,12 @@ from pathlib import Path
 
 import torch
 
-from rl.sac import SquashedGaussianActor
+from rl.sac import SquashedGaussianActor, infer_dims_from_actor_file
 
 
 def export_torchscript(weights_path, output_path, obs_dim=4, act_dim=1):
-    actor = SquashedGaussianActor(obs_dim, act_dim)
+    _, _, hidden_dim = infer_dims_from_actor_file(weights_path)
+    actor = SquashedGaussianActor(obs_dim, act_dim, hidden_dim=hidden_dim)
     state = torch.load(weights_path, map_location="cpu")
     actor.load_state_dict(state)
     actor.eval()
