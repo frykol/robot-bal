@@ -1,3 +1,10 @@
+"""
+Trening SAC wyłącznie w symulacji (laptop/PC).
+
+Dla imu_raw6 / imu_raw12 obserwacje to syntetyczne odczyty BMI160 (LSB + szum),
+nie I2C na Raspberry Pi. Prawdziwe IMU: calibrate_pi.py, run_policy_pi.py, online_train_pi.py.
+"""
+
 import argparse
 import json
 from datetime import datetime, timezone
@@ -7,9 +14,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from rl.envs import InvertedPendulumEnv
-from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent
+from rl.imu_obs import (
+    OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW6,
+    OBS_MODE_PROCESSED4,
+    is_raw_imu_mode,
+    obs_dim_for_mode,
+)
+from rl.robot_mass_model import resolve_train_physics
+from rl.sac import DEFAULT_HIDDEN_DIM, DEFAULT_LR, SACAgent
 
 DEFAULT_RUNS_ROOT = Path("artifacts") / "runs"
+
+
+def _lr_slug(lr):
+    text = f"{lr:.0e}".replace("e-0", "e-").replace("e+0", "e+")
+    return text.replace(".", "p")
 
 
 def make_auto_run_name(
@@ -18,11 +38,12 @@ def make_auto_run_name(
     train_fall_angle_deg,
     no_domain_randomization,
     episodes,
+    lr,
 ):
     dr = "dr" if not no_domain_randomization else "nodr"
     return (
         f"h{hidden_dim}_com{com_height_m:.3f}_fall{int(train_fall_angle_deg)}"
-        f"_{dr}_ep{episodes}"
+        f"_{dr}_lr{_lr_slug(lr)}_ep{episodes}"
     )
 
 
@@ -44,6 +65,7 @@ def resolve_run_paths(args):
             args.train_fall_angle_deg,
             args.no_domain_randomization,
             args.episodes,
+            args.lr,
         )
         run_dir = DEFAULT_RUNS_ROOT / slug
     else:
@@ -67,6 +89,20 @@ def save_run_config(run_dir, config):
     print(f"Saved run config: {config_path}")
 
 
+def _print_physics_summary(physics):
+    layout = physics.layout
+    print("Physics (cart-pole):")
+    print(f"  m (axle)     = {physics.m_axle_kg:.3f} kg")
+    print(f"  M (body)     = {physics.M_body_kg:.3f} kg")
+    print(f"  l (body COM) = {physics.l_body_m:.4f} m")
+    print(f"  z_COM total  = {physics.z_com_full_m:.4f} m (from axle)")
+    print(f"  F_max        = {physics.force_max_n:.2f} N", end="")
+    if layout.get("force_from_torque_n") is not None:
+        print(f"  (torque limit {layout['force_from_torque_n']:.2f} N, cap {layout.get('force_max_cap_n')})")
+    else:
+        print()
+
+
 def train(
     episodes,
     max_steps,
@@ -78,19 +114,45 @@ def train(
     plot_update_every,
     train_fall_angle_deg,
     no_domain_randomization,
-    com_height_m,
+    physics,
     hidden_dim,
+    lr,
+    dt,
+    obs_mode,
+    imu_noise_std,
+    device=None,
     run_dir=None,
 ):
     if run_dir is not None:
         print(f"Run output directory: {run_dir.resolve()}")
+    print(
+        f"Training with lr={lr}, hidden_dim={hidden_dim}, device={device}, "
+        f"obs_mode={obs_mode} (obs_dim={obs_dim_for_mode(obs_mode)})"
+    )
+    if is_raw_imu_mode(obs_mode):
+        print(
+            "IMU: symulowane acc/gyro (BMI160 LSB) z dynamiki wahadła — bez I2C / Raspberry Pi."
+        )
+    _print_physics_summary(physics)
 
     env = InvertedPendulumEnv(
         fall_angle_deg=train_fall_angle_deg,
         domain_randomization=not no_domain_randomization,
-        com_height_m=com_height_m,
+        com_height_m=physics.l_body_m,
+        m_nominal=physics.m_axle_kg,
+        M_nominal=physics.M_body_kg,
+        force_max_nominal=physics.force_max_n,
+        dt=dt,
+        obs_mode=obs_mode,
+        imu_noise_std=imu_noise_std,
     )
-    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dim=hidden_dim)
+    agent = SACAgent(
+        obs_dim=env.obs_dim,
+        act_dim=env.act_dim,
+        hidden_dim=hidden_dim,
+        lr=lr,
+        device=device,
+    )
 
     rewards = []
     best_avg = -np.inf
@@ -260,7 +322,8 @@ def compute_rolling_average(values, window):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=1000)
-    parser.add_argument("--max-steps", type=int, default=1000)
+    # dt default is 2 ms, so 5000 steps ≈ 10 seconds per episode.
+    parser.add_argument("--max-steps", type=int, default=5000)
     parser.add_argument(
         "--save-path", type=Path, default=Path("artifacts") / "actor_sim.pt"
     )
@@ -292,21 +355,78 @@ def parse_args():
         help="Fall angle threshold used in simulation training environment.",
     )
     parser.add_argument(
+        "--dt",
+        type=float,
+        default=0.002,
+        help="Krok czasowy symulacji [s]. Domyślnie 2 ms (0.002).",
+    )
+    parser.add_argument(
+        "--obs-mode",
+        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        default=OBS_MODE_PROCESSED4,
+        help=(
+            "processed4 | imu_raw6 | imu_raw12 — w simie zawsze syntetyczne LSB "
+            "(nie prawdziwy I2C; na Pi użyj run_policy_pi / online_train_pi)."
+        ),
+    )
+    parser.add_argument(
+        "--imu-noise-std",
+        type=float,
+        default=25.0,
+        help="Szum LSB na kanał (symulacja imu_raw6).",
+    )
+    parser.add_argument(
         "--no-domain-randomization",
         action="store_true",
         help="Disable sim domain randomization (not recommended for transfer).",
     )
     parser.add_argument(
+        "--manual-com-height",
+        action="store_true",
+        help="Wyłącz model mas; użyj --com-height-m i stałych m/M (stary tryb).",
+    )
+    parser.add_argument(
         "--com-height-m",
         type=float,
         default=0.11,
-        help="Axle-to-center-of-mass distance in meters for training dynamics.",
+        help="Ręczne l [m] (tylko z --manual-com-height).",
+    )
+    parser.add_argument("--body-height-m", type=float, default=0.14, help="Wysokość korpusu nad osią [m].")
+    parser.add_argument("--battery-z-m", type=float, default=None, help="Wys. środka baterii [m].")
+    parser.add_argument("--case-z-m", type=float, default=None, help="Wys. środka masy obudowy [m].")
+    parser.add_argument("--rpi-z-m", type=float, default=None, help="Wys. środka RPi [m].")
+    parser.add_argument("--motor-mass-g", type=float, default=160.0)
+    parser.add_argument("--n-motors", type=int, default=2)
+    parser.add_argument("--rpi-mass-g", type=float, default=55.0)
+    parser.add_argument("--case-mass-g", type=float, default=466.0)
+    parser.add_argument("--battery-mass-g", type=float, default=250.0)
+    parser.add_argument("--wheel-radius-m", type=float, default=0.03)
+    parser.add_argument("--motor-torque-nm", type=float, default=0.35, help="Moment na silnik [Nm].")
+    parser.add_argument("--n-drive-motors", type=int, default=2)
+    parser.add_argument(
+        "--force-max",
+        type=float,
+        default=10.0,
+        help="Górny limit siły poziomej [N] (min z limitem z momentu).",
     )
     parser.add_argument(
         "--hidden-dim",
         type=int,
         default=DEFAULT_HIDDEN_DIM,
         help="Liczba neuronów w warstwach ukrytych actor/critic.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=DEFAULT_LR,
+        help="Learning rate actor/critic (Adam), np. 3e-4 lub 1e-4.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        choices=["cpu", "cuda"],
+        help="Urządzenie PyTorch (domyślnie: cuda jeśli wspierane, inaczej cpu).",
     )
     run_group = parser.add_mutually_exclusive_group()
     run_group.add_argument(
@@ -331,6 +451,10 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    args.com_from_masses = not args.manual_com_height
+    physics = resolve_train_physics(args)
+    args.com_height_m = physics.l_body_m
+
     save_path, plot_path, run_dir = resolve_run_paths(args)
 
     if run_dir is not None:
@@ -341,10 +465,19 @@ if __name__ == "__main__":
                 "run_dir": str(run_dir),
                 "episodes": args.episodes,
                 "max_steps": args.max_steps,
+                "dt": args.dt,
+                "obs_mode": args.obs_mode,
+                "imu_noise_std": args.imu_noise_std,
                 "rolling_window": args.rolling_window,
                 "save_every": args.save_every,
                 "hidden_dim": args.hidden_dim,
-                "com_height_m": args.com_height_m,
+                "lr": args.lr,
+                "com_height_m": physics.l_body_m,
+                "z_com_full_m": physics.z_com_full_m,
+                "m_axle_kg": physics.m_axle_kg,
+                "M_body_kg": physics.M_body_kg,
+                "force_max_n": physics.force_max_n,
+                "physics_layout": physics.layout,
                 "train_fall_angle_deg": args.train_fall_angle_deg,
                 "domain_randomization": not args.no_domain_randomization,
                 "save_path": str(save_path),
@@ -363,8 +496,13 @@ if __name__ == "__main__":
         args.plot_update_every,
         args.train_fall_angle_deg,
         args.no_domain_randomization,
-        args.com_height_m,
+        physics,
         args.hidden_dim,
+        args.lr,
+        args.dt,
+        args.obs_mode,
+        args.imu_noise_std,
+        args.device,
         run_dir=run_dir,
     )
 

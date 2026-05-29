@@ -15,8 +15,9 @@ try:
 except ImportError:
     torch = None
 
-from rl.envs import RaspberryBalanceRuntime
-from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent, infer_dims_from_actor_file
+from rl.pi_runtime import RaspberryBalanceRuntime
+from rl.imu_obs import OBS_MODE_IMU_RAW12, OBS_MODE_IMU_RAW6, OBS_MODE_PROCESSED4, features_from_obs
+from rl.sac import DEFAULT_HIDDEN_DIM, DEFAULT_LR, SACAgent, infer_dims_from_actor_file
 
 
 def _profile_to_motor_scale(profile):
@@ -27,10 +28,10 @@ def _profile_to_motor_scale(profile):
     return 0.75
 
 
-def compute_online_reward(obs, action, fall_angle_rad):
-    pitch = float(obs[0])
-    x = float(obs[2])
-    x_dot = float(obs[3])
+def compute_online_reward(obs, action, fall_angle_rad, obs_mode, calibration):
+    pitch, _pitch_rate, x, x_dot = features_from_obs(
+        obs, obs_mode, calibration=calibration
+    )
     u = float(action[0])
 
     angle_term = 1.0 - min(abs(pitch) / max(fall_angle_rad, 1e-6), 1.0)
@@ -71,9 +72,10 @@ def run_online_training(args):
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(args.profile),
         loop_hz=args.loop_hz,
-        gyro_bias_dps=float(calibration.get("gyro_bias_dps", 0.0)),
-        accel_pitch_bias_rad=float(calibration.get("accel_pitch_bias_rad", 0.0)),
+        imu_bus_ids=tuple(args.imu_bus_ids),
+        imu_calibration=calibration,
         fall_angle_deg=args.tilt_limit_deg,
+        obs_mode=args.obs_mode,
     )
 
     resume_path = args.resume_checkpoint
@@ -98,9 +100,11 @@ def run_online_training(args):
             sys.exit(1)
     if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
         print(
-            f"Warning: checkpoint dims ({ckpt_obs},{ckpt_act}) != env ({env.obs_dim},{env.act_dim})",
+            f"Error: checkpoint dims ({ckpt_obs},{ckpt_act}) != env ({env.obs_dim},{env.act_dim}). "
+            f"Użyj actora wytrenowanego z --obs-mode {args.obs_mode}.",
             file=sys.stderr,
         )
+        sys.exit(1)
     print(f"Using hidden_dim={hidden_dim}")
 
     agent = SACAgent(
@@ -160,7 +164,13 @@ def run_online_training(args):
                 action = agent.act(obs, deterministic=True)
 
             next_obs, _, done = env.step(action)
-            reward = compute_online_reward(next_obs, action, env.fall_angle_rad)
+            reward = compute_online_reward(
+                next_obs,
+                action,
+                env.fall_angle_rad,
+                env.obs_mode,
+                env.imu_calibration,
+            )
             if done:
                 env.drive.stop()
                 reward -= args.fall_penalty
@@ -261,6 +271,20 @@ def parse_args():
         help="Resume from artifacts/sac_online_latest.pt if it exists.",
     )
     parser.add_argument("--calibration-path", type=Path, default=Path("artifacts/pi_calibration.json"))
+    parser.add_argument(
+        "--obs-mode",
+        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        default=OBS_MODE_IMU_RAW12,
+        help="Musi zgadzać się z treningiem symulacji / actor checkpoint.",
+    )
+    parser.add_argument(
+        "--imu-bus-ids",
+        type=int,
+        nargs=2,
+        default=[1, 3],
+        metavar=("BUS_A", "BUS_B"),
+        help="I2C bus dla dwóch BMI160 (domyślnie 1 i 3).",
+    )
     parser.add_argument("--save-dir", type=Path, default=Path("artifacts"))
     parser.add_argument("--profile", choices=["safe", "normal", "aggressive"], default="safe")
     parser.add_argument("--loop-hz", type=int, default=100)
@@ -288,7 +312,12 @@ def parse_args():
         help="Keep low on Raspberry Pi (16-32). Was 128 and often crashed ~ep 16.",
     )
     parser.add_argument("--buffer-size", type=int, default=10_000)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-4,
+        help=f"Learning rate online SAC (domyślnie 1e-4; symulacja: {DEFAULT_LR}).",
+    )
     parser.add_argument(
         "--hidden-dim",
         type=int,

@@ -10,7 +10,8 @@ This repository now includes a full SAC pipeline for a balancing robot:
 ## Files added
 
 - `rl/sac.py` - SAC agent, actor, critics, replay buffer.
-- `rl/envs.py` - training env (`InvertedPendulumEnv`) + deployment runtime (`RaspberryBalanceRuntime`).
+- `rl/envs.py` - symulacja treningowa (`InvertedPendulumEnv`; syntetyczne IMU dla `imu_raw*`)
+- `rl/pi_runtime.py` - runtime na Raspberry Pi (prawdziwe BMI160 + silniki)
 - `train_sim.py` - simulation pretraining.
 - `export_actor.py` - TorchScript export for deterministic deployment.
 - `run_policy_pi.py` - runs learned policy on Raspberry Pi.
@@ -19,15 +20,24 @@ This repository now includes a full SAC pipeline for a balancing robot:
 
 ## Mass model used in simulation
 
-From provided hardware masses:
+Hardware masses (default):
 
-- motors: `2 x 160g = 320g`,
-- body (Raspberry + case + battery): `55g + 466g + 250g = 771g`.
+- motors: `2 x 160g` at the wheel axle (bottom),
+- body: Raspberry `55g` + case `466g` + battery `250g` → `M = 0.771 kg`,
+- `m = 0.320 kg` at the axle.
 
-These values are used as:
+By default `train_sim.py` uses `rl/robot_mass_model.py`: component heights along the
+body box give **body COM height `l`** and **drive force limit** from motor torque
+`F ≤ n_motors * τ / r_wheel` (capped by `--force-max`).
 
-- `m = 0.320 kg` (wheel/motor mass),
-- `M = 0.771 kg` (body mass).
+Tune geometry: `--body-height-m`, `--battery-z-m`, `--motor-torque-nm`, `--wheel-radius-m`.
+Legacy fixed COM: `--manual-com-height --com-height-m 0.11`.
+
+Batch comparison runs:
+
+```bash
+bash scripts/sim_comparison_runs.sh
+```
 
 ## Train in virtual environment
 
@@ -40,7 +50,8 @@ Compare multiple runs in separate folders:
 ```bash
 python train_sim.py --run-name h16_baseline --hidden-dim 16 --com-height-m 0.11
 python train_sim.py --run-name h64_low_com --hidden-dim 64 --com-height-m 0.09
-python train_sim.py --auto-run-name --hidden-dim 32 --com-height-m 0.10
+python train_sim.py --run-name h32_lr1e4 --hidden-dim 32 --lr 1e-4
+python train_sim.py --auto-run-name --hidden-dim 32 --com-height-m 0.10 --lr 3e-4
 ```
 
 Each run directory (under `artifacts/runs/` by default) contains:

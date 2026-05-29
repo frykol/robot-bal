@@ -12,9 +12,10 @@ REG_ACC_X_L = 0x12
 REG_GYR_X_L = 0x0C
 REG_GYR_RANGE = 0x43
 
-# ±250 °/s — matches Bosch sensitivity used in runtime (see GYR_LSB_PER_DPS).
+# ±250 °/s — matches Bosch sensitivity used in runtime (see rl.imu_obs.GYR_LSB_PER_DPS).
+from rl.imu_obs import GYR_LSB_PER_DPS
+
 GYR_RANGE_250DPS = 0x03
-GYR_LSB_PER_DPS = 131.2
 
 
 def twos_complement(low, high):

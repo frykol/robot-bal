@@ -1,6 +1,13 @@
-import time
-
 import numpy as np
+
+from rl.imu_obs import (
+    OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW6,
+    OBS_MODE_PROCESSED4,
+    obs_dim_for_mode,
+    simulate_dual_imu_raw_reading,
+    simulate_imu_raw_reading,
+)
 
 
 def _wrap_angle_rad(angle):
@@ -20,7 +27,10 @@ class InvertedPendulumEnv:
     """
     Lightweight dynamics environment for fast SAC pretraining.
     State: [x, x_dot, theta, theta_dot]
-    Observation used by policy: [theta, theta_dot, x, x_dot]
+    Observation modes:
+      - processed4: [theta, theta_dot, x, x_dot]
+      - imu_raw6: one BMI160 [ax, ay, az, gx, gy, gz] LSB
+      - imu_raw12: two BMI160 [imu0(6), imu1(6)] LSB — simulated in train_sim (no I2C)
     Action: normalized in [-1, 1], internally scaled to force.
     """
 
@@ -29,19 +39,21 @@ class InvertedPendulumEnv:
         fall_angle_deg=30.0,
         domain_randomization=True,
         com_height_m=0.11,
+        dt=0.002,
+        obs_mode=OBS_MODE_PROCESSED4,
+        imu_noise_std=25.0,
+        m_nominal=None,
+        M_nominal=None,
+        force_max_nominal=None,
     ):
         self.g = 9.81
 
-        # Component masses from user-provided data:
-        # motors: 2 x 160g, rpi: 55g, case: 466g, battery: 250g.
-        self.m_nominal = 0.320  # wheels+motors [kg]
-        self.M_nominal = 0.771  # body [kg]
-
-        # Distance from wheel axle to center of mass.
-        # Lower center of mass -> smaller l.
+        # Default: motors 2x160g at axle; body Pi+case+battery (see rl/robot_mass_model.py).
+        self.m_nominal = 0.320 if m_nominal is None else float(m_nominal)
+        self.M_nominal = 0.771 if M_nominal is None else float(M_nominal)
         self.l_nominal = float(com_height_m)
-        self.dt = 0.01
-        self.force_max_nominal = 10.0
+        self.dt = float(dt)
+        self.force_max_nominal = 10.0 if force_max_nominal is None else float(force_max_nominal)
         self.theta_max = np.radians(float(fall_angle_deg))
         self.domain_randomization = bool(domain_randomization)
 
@@ -50,8 +62,15 @@ class InvertedPendulumEnv:
         self.M = self.M_nominal
         self.l = self.l_nominal
         self.force_max = self.force_max_nominal
-        self.obs_dim = 4
+        self.obs_mode = str(obs_mode)
+        self.imu_noise_std = float(imu_noise_std)
+        self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.act_dim = 1
+        n_imu = 2 if self.obs_mode == OBS_MODE_IMU_RAW12 else 1
+        self._gyro_bias_lsb = np.zeros((n_imu, 3), dtype=np.float64)
+        self._accel_bias_lsb = np.zeros((n_imu, 3), dtype=np.float64)
+        self._imu_theta_offset_rad = np.zeros(n_imu, dtype=np.float64)
+        self._last_x_ddot = 0.0
         self.reset()
 
     def reset(self):
@@ -59,6 +78,7 @@ class InvertedPendulumEnv:
         self.state = np.array([0.0, 0.0, np.radians(np.random.uniform(-2, 2)), 0.0])
         if np.random.rand() < 0.05:
             self.state[3] += np.random.uniform(-0.5, 0.5)
+        self._last_x_ddot = 0.0
         return self._to_obs(self.state)
 
     def _resample_dynamics(self):
@@ -67,6 +87,9 @@ class InvertedPendulumEnv:
             self.M = self.M_nominal
             self.l = self.l_nominal
             self.force_max = self.force_max_nominal
+            self._gyro_bias_lsb[:] = 0.0
+            self._accel_bias_lsb[:] = 0.0
+            self._imu_theta_offset_rad[:] = 0.0
             return
 
         # Sim-to-real randomization for better transfer robustness.
@@ -74,9 +97,32 @@ class InvertedPendulumEnv:
         self.M = self.M_nominal * np.random.uniform(0.9, 1.1)
         self.l = self.l_nominal * np.random.uniform(0.9, 1.1)
         self.force_max = self.force_max_nominal * np.random.uniform(0.85, 1.15)
+        n_imu = self._gyro_bias_lsb.shape[0]
+        self._gyro_bias_lsb = np.random.uniform(-80.0, 80.0, size=(n_imu, 3))
+        self._accel_bias_lsb = np.random.uniform(-200.0, 200.0, size=(n_imu, 3))
+        self._imu_theta_offset_rad = np.random.uniform(-0.02, 0.02, size=n_imu)
 
-    def _to_obs(self, state):
+    def _to_obs(self, state, x_ddot=0.0):
         x, x_dot, theta, theta_dot = state
+        if self.obs_mode == OBS_MODE_IMU_RAW12:
+            return simulate_dual_imu_raw_reading(
+                theta,
+                theta_dot,
+                x_ddot,
+                self._gyro_bias_lsb,
+                self._accel_bias_lsb,
+                self.imu_noise_std,
+                self._imu_theta_offset_rad,
+            )
+        if self.obs_mode == OBS_MODE_IMU_RAW6:
+            return simulate_imu_raw_reading(
+                theta,
+                theta_dot,
+                x_ddot,
+                self._gyro_bias_lsb[0],
+                self._accel_bias_lsb[0],
+                self.imu_noise_std,
+            )
         return np.array([theta, theta_dot, x, x_dot], dtype=np.float32)
 
     def step(self, action):
@@ -99,6 +145,7 @@ class InvertedPendulumEnv:
         theta_dot += theta_ddot * self.dt
 
         self.state = np.array([x, x_dot, theta, theta_dot])
+        self._last_x_ddot = float(x_ddot)
         done = bool(abs(theta) > self.theta_max)
 
         if done:
@@ -108,128 +155,5 @@ class InvertedPendulumEnv:
             center_term = max(0.0, 1.0 - 0.25 * abs(x))
             reward = angle_term + 0.2 * center_term
 
-        return self._to_obs(self.state), reward, done
-
-
-class RaspberryBalanceRuntime:
-    """
-    Runtime environment for deployment/inference on Raspberry Pi.
-    Exposes the same (obs, action) interface as training env.
-    """
-
-    def __init__(
-        self,
-        bus_id=1,
-        motor_scale=0.8,
-        loop_hz=100,
-        pitch_alpha=0.98,
-        gyro_lsb_per_dps=None,
-        encoder_step_to_m=0.0005,
-        gyro_bias_dps=0.0,
-        accel_pitch_bias_rad=0.0,
-        fall_angle_deg=25.0,
-    ):
-        from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
-        from hardware.drive_module import DriveModule
-
-        if gyro_lsb_per_dps is None:
-            gyro_lsb_per_dps = GYR_LSB_PER_DPS
-
-        self.imu = BMI160(bus_id=bus_id)
-        self.drive = DriveModule()
-        self.motor_scale = float(motor_scale)
-        self.loop_dt = 1.0 / float(loop_hz)
-        self.pitch_alpha = float(pitch_alpha)
-        self.gyro_lsb_per_dps = float(gyro_lsb_per_dps)
-        self.encoder_step_to_m = float(encoder_step_to_m)
-        self.gyro_bias_dps = float(gyro_bias_dps)
-        self.accel_pitch_bias_rad = float(accel_pitch_bias_rad)
-        self.fall_angle_rad = np.radians(float(fall_angle_deg))
-
-        self.pitch = 0.0
-        self.pitch_rate = 0.0
-        self.x_est = 0.0
-        self.x_dot_est = 0.0
-        self._last_t = time.time()
-
-        self.obs_dim = 4
-        self.act_dim = 1
-
-    def _read_pitch_rate_rad(self):
-        gx, _, _ = self.imu.read_gyro()
-        deg_s = (gx / self.gyro_lsb_per_dps) - self.gyro_bias_dps
-        return np.deg2rad(deg_s)
-
-    def _read_pitch_from_acc(self):
-        ax, _, az = self.imu.read_acc()
-        return _accel_pitch_raw_rad(ax, az) - self.accel_pitch_bias_rad
-
-    def reset(self):
-        self.drive.stop()
-        self.drive.reset_encoders()
-        self.x_est = 0.0
-        self.x_dot_est = 0.0
-        self._last_t = time.time()
-        self.pitch = self._read_pitch_from_acc()
-        self.pitch_rate = self._read_pitch_rate_rad()
-        return self._get_obs()
-
-    def _get_obs(self):
-        now = time.time()
-        dt = max(1e-4, now - self._last_t)
-        self._last_t = now
-
-        self.pitch_rate = self._read_pitch_rate_rad()
-        pitch_acc = self._read_pitch_from_acc()
-        pitch_gyro = _wrap_angle_rad(self.pitch + self.pitch_rate * dt)
-        acc_blend = (1.0 - self.pitch_alpha) * _angle_diff_rad(pitch_acc, pitch_gyro)
-        self.pitch = _wrap_angle_rad(pitch_gyro + acc_blend)
-
-        enc_left, enc_right = self.drive.get_encoder_steps()
-        steps_avg = 0.5 * (enc_left + enc_right)
-        meters = steps_avg * self.encoder_step_to_m
-        self.x_dot_est = (meters - self.x_est) / dt
-        self.x_est = meters
-
-        return np.array(
-            [self.pitch, self.pitch_rate, self.x_est, self.x_dot_est], dtype=np.float32
-        )
-
-    def step(self, action):
-        cmd = float(np.clip(action[0], -1.0, 1.0))
-        pwm = min(abs(cmd) * self.motor_scale, 1.0)
-        if cmd >= 0:
-            self.drive.forward(pwm)
-        else:
-            self.drive.backward(pwm)
-
-        time.sleep(self.loop_dt)
-        obs = self._get_obs()
-        done = abs(obs[0]) > self.fall_angle_rad
-        reward = 0.0
-        return obs, reward, done
-
-    def close(self):
-        self.drive.close()
-
-    def calibrate_imu(self, samples=500, sample_dt=0.005):
-        """
-        Estimate IMU biases while the robot is stationary.
-        Returns a dict with biases that can be reused in runtime args.
-        """
-        gyro_dps = []
-        accel_pitch = []
-        for _ in range(samples):
-            gx, _, _ = self.imu.read_gyro()
-            ax, _, az = self.imu.read_acc()
-            gyro_dps.append(gx / self.gyro_lsb_per_dps)
-            accel_pitch.append(_accel_pitch_raw_rad(ax, az))
-            time.sleep(sample_dt)
-
-        self.gyro_bias_dps = float(np.mean(gyro_dps))
-        self.accel_pitch_bias_rad = float(np.mean(accel_pitch))
-        return {
-            "gyro_bias_dps": self.gyro_bias_dps,
-            "accel_pitch_bias_rad": self.accel_pitch_bias_rad,
-        }
+        return self._to_obs(self.state, x_ddot=self._last_x_ddot), reward, done
 

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from rl.envs import RaspberryBalanceRuntime
+from rl.imu_obs import OBS_MODE_IMU_RAW12, pitch_rad_from_raw_obs
+from rl.pi_runtime import RaspberryBalanceRuntime
 
 
 def _preview_tilt_until_enter(env, hz=20):
@@ -19,16 +20,26 @@ def _preview_tilt_until_enter(env, hz=20):
     period = 1.0 / float(hz)
     while True:
         obs = env._get_obs()
-        pitch_deg = float(np.degrees(obs[0]))
-        acc_deg = float(np.degrees(env._read_pitch_from_acc()))
-        rate_deg_s = float(np.degrees(obs[1]))
-        print(
-            f"\rnachylenie: {pitch_deg:+7.2f}°  "
-            f"| acc: {acc_deg:+7.2f}°  "
-            f"| gyro: {rate_deg_s:+7.2f}°/s   ",
-            end="",
-            flush=True,
-        )
+        if env.obs_mode == OBS_MODE_IMU_RAW12:
+            p0 = np.degrees(pitch_rad_from_raw_obs(obs, imu_index=0))
+            p1 = np.degrees(pitch_rad_from_raw_obs(obs, imu_index=1))
+            print(
+                f"\rIMU bus {env.imu_bus_ids[0]} pitch {p0:+6.2f}° | "
+                f"bus {env.imu_bus_ids[1]} pitch {p1:+6.2f}°   ",
+                end="",
+                flush=True,
+            )
+        else:
+            pitch_deg = float(np.degrees(obs[0]))
+            acc_deg = float(np.degrees(env._read_pitch_from_acc()))
+            rate_deg_s = float(np.degrees(obs[1]))
+            print(
+                f"\rnachylenie: {pitch_deg:+7.2f}°  "
+                f"| acc: {acc_deg:+7.2f}°  "
+                f"| gyro: {rate_deg_s:+7.2f}°/s   ",
+                end="",
+                flush=True,
+            )
 
         if select.select([sys.stdin], [], [], 0)[0]:
             try:
@@ -40,8 +51,13 @@ def _preview_tilt_until_enter(env, hz=20):
         time.sleep(period)
 
 
-def main(samples, sample_dt, output_path, preview_hz):
-    env = RaspberryBalanceRuntime(motor_scale=0.0, loop_hz=100)
+def main(samples, sample_dt, output_path, preview_hz, obs_mode, imu_bus_ids):
+    env = RaspberryBalanceRuntime(
+        motor_scale=0.0,
+        loop_hz=100,
+        obs_mode=obs_mode,
+        imu_bus_ids=imu_bus_ids,
+    )
     try:
         _preview_tilt_until_enter(env, hz=preview_hz)
         print("Trzymaj robota nieruchomo podczas kalibracji...")
@@ -73,9 +89,22 @@ def parse_args():
     parser.add_argument(
         "--output-path", type=Path, default=Path("artifacts") / "pi_calibration.json"
     )
+    parser.add_argument(
+        "--obs-mode",
+        default=OBS_MODE_IMU_RAW12,
+        choices=["processed4", "imu_raw6", "imu_raw12"],
+    )
+    parser.add_argument("--imu-bus-ids", type=int, nargs=2, default=[1, 3])
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(args.samples, args.sample_dt, args.output_path, args.preview_hz)
+    main(
+        args.samples,
+        args.sample_dt,
+        args.output_path,
+        args.preview_hz,
+        args.obs_mode,
+        tuple(args.imu_bus_ids),
+    )

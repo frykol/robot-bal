@@ -4,7 +4,8 @@ import json
 import time
 from pathlib import Path
 
-from rl.envs import RaspberryBalanceRuntime
+from rl.pi_runtime import RaspberryBalanceRuntime
+from rl.imu_obs import OBS_MODE_IMU_RAW12, OBS_MODE_IMU_RAW6, OBS_MODE_PROCESSED4, features_from_obs
 from rl.sac import SACAgent, infer_dims_from_actor_file
 
 
@@ -24,6 +25,8 @@ def run(
     tilt_limit_deg=25.0,
     log_path=None,
     calibration_path=None,
+    obs_mode=OBS_MODE_IMU_RAW12,
+    imu_bus_ids=(1, 3),
 ):
     calibration = {}
     if calibration_path is not None and calibration_path.exists():
@@ -32,11 +35,17 @@ def run(
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(profile),
         loop_hz=loop_hz,
-        gyro_bias_dps=float(calibration.get("gyro_bias_dps", 0.0)),
-        accel_pitch_bias_rad=float(calibration.get("accel_pitch_bias_rad", 0.0)),
+        imu_bus_ids=imu_bus_ids,
+        imu_calibration=calibration,
         fall_angle_deg=tilt_limit_deg,
+        obs_mode=obs_mode,
     )
-    _, _, hidden_dim = infer_dims_from_actor_file(Path(actor_path))
+    ckpt_obs, ckpt_act, hidden_dim = infer_dims_from_actor_file(Path(actor_path))
+    if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
+        raise ValueError(
+            f"Actor dims ({ckpt_obs},{ckpt_act}) != runtime ({env.obs_dim},{env.act_dim}). "
+            f"Użyj --obs-mode zgodny z treningiem."
+        )
     agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dim=hidden_dim)
     agent.load_actor(actor_path)
 
@@ -61,10 +70,14 @@ def run(
             action = agent.act(obs, deterministic=deterministic)
             obs, _, done = env.step(action)
             if writer is not None:
-                writer.writerow(
-                    [time.time(), float(obs[0]), float(obs[1]), float(obs[2]), float(obs[3]), float(action[0])]
+                pitch, pitch_rate, x_m, x_dot = features_from_obs(
+                    obs, obs_mode, calibration=calibration
                 )
-            if abs(float(obs[0])) > tilt_limit_rad:
+                writer.writerow(
+                    [time.time(), pitch, pitch_rate, x_m, x_dot, float(action[0])]
+                )
+            pitch, _, _, _ = features_from_obs(obs, obs_mode, calibration=calibration)
+            if abs(pitch) > tilt_limit_rad:
                 done = True
             if done:
                 print("Safety stop: tilt threshold exceeded.")
@@ -89,6 +102,19 @@ def parse_args():
     parser.add_argument(
         "--calibration-path", type=Path, default=Path("artifacts") / "pi_calibration.json"
     )
+    parser.add_argument(
+        "--obs-mode",
+        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        default=OBS_MODE_IMU_RAW12,
+        help="processed4 | imu_raw6 (1 czujnik) | imu_raw12 (2 czujniki I2C).",
+    )
+    parser.add_argument(
+        "--imu-bus-ids",
+        type=int,
+        nargs=2,
+        default=[1, 3],
+        metavar=("BUS_A", "BUS_B"),
+    )
     return parser.parse_args()
 
 
@@ -102,5 +128,7 @@ if __name__ == "__main__":
         tilt_limit_deg=args.tilt_limit_deg,
         log_path=args.log_path,
         calibration_path=args.calibration_path,
+        obs_mode=args.obs_mode,
+        imu_bus_ids=tuple(args.imu_bus_ids),
     )
 

@@ -1,4 +1,5 @@
 import random
+import sys
 from collections import deque
 
 import numpy as np
@@ -8,9 +9,48 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _cuda_usable():
+    if not torch.cuda.is_available():
+        return False
+    try:
+        major, _minor = torch.cuda.get_device_capability(0)
+        # Current PyTorch wheels often require sm_75+ (CC 7.5).
+        if major < 7:
+            return False
+        x = torch.zeros(1, device="cuda")
+        x @ x
+        return True
+    except RuntimeError:
+        return False
+
+
+def resolve_device(requested=None):
+    if requested is not None:
+        dev = torch.device(requested)
+        if dev.type == "cuda" and not _cuda_usable():
+            print(
+                "CUDA requested but GPU is unavailable or incompatible; using CPU.",
+                file=sys.stderr,
+            )
+            return torch.device("cpu")
+        return dev
+
+    if _cuda_usable():
+        return torch.device("cuda")
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        cap = torch.cuda.get_device_capability(0)
+        print(
+            f"GPU {name} (CC {cap[0]}.{cap[1]}) is not supported by this PyTorch build; using CPU.",
+            file=sys.stderr,
+        )
+    return torch.device("cpu")
+
+
+DEVICE = resolve_device()
 
 DEFAULT_HIDDEN_DIM = 16
+DEFAULT_LR = 3e-4
 
 
 def _torch_load(path, full_checkpoint=False):
@@ -100,15 +140,15 @@ class ReplayBuffer:
     def push(self, s, a, r, ns, d):
         self.buffer.append((s, a, r, ns, d))
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, device):
         batch = random.sample(self.buffer, batch_size)
         s, a, r, ns, d = map(np.stack, zip(*batch))
         return (
-            torch.tensor(s, dtype=torch.float32).to(DEVICE),
-            torch.tensor(a, dtype=torch.float32).to(DEVICE),
-            torch.tensor(r, dtype=torch.float32).to(DEVICE).unsqueeze(1),
-            torch.tensor(ns, dtype=torch.float32).to(DEVICE),
-            torch.tensor(d, dtype=torch.float32).to(DEVICE).unsqueeze(1),
+            torch.tensor(s, dtype=torch.float32).to(device),
+            torch.tensor(a, dtype=torch.float32).to(device),
+            torch.tensor(r, dtype=torch.float32).to(device).unsqueeze(1),
+            torch.tensor(ns, dtype=torch.float32).to(device),
+            torch.tensor(d, dtype=torch.float32).to(device).unsqueeze(1),
         )
 
     def __len__(self):
@@ -123,10 +163,11 @@ class SACAgent:
         gamma=0.99,
         tau=0.005,
         alpha=0.2,
-        lr=3e-4,
+        lr=DEFAULT_LR,
         hidden_dim=DEFAULT_HIDDEN_DIM,
         buffer_size=100_000,
         batch_size=256,
+        device=None,
     ):
         self.gamma = gamma
         self.tau = tau
@@ -137,12 +178,13 @@ class SACAgent:
         self.hidden_dim = hidden_dim
         self.lr = lr
         self.buffer_size = buffer_size
+        self.device = resolve_device(device)
 
-        self.actor = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(DEVICE)
-        self.q1 = QNetwork(obs_dim, act_dim, hidden_dim).to(DEVICE)
-        self.q2 = QNetwork(obs_dim, act_dim, hidden_dim).to(DEVICE)
-        self.q1_target = QNetwork(obs_dim, act_dim, hidden_dim).to(DEVICE)
-        self.q2_target = QNetwork(obs_dim, act_dim, hidden_dim).to(DEVICE)
+        self.actor = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(self.device)
+        self.q1 = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
+        self.q2 = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
+        self.q1_target = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
+        self.q2_target = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
 
@@ -153,7 +195,7 @@ class SACAgent:
         self.buffer = ReplayBuffer(buffer_size)
 
     def act(self, obs, deterministic=False):
-        obs_t = torch.FloatTensor(obs).to(DEVICE).unsqueeze(0)
+        obs_t = torch.FloatTensor(obs).to(self.device).unsqueeze(0)
         with torch.no_grad():
             action, _ = self.actor(obs_t, deterministic=deterministic, with_logprob=False)
         return action.cpu().numpy()[0]
@@ -165,7 +207,7 @@ class SACAgent:
         if len(self.buffer) < self.batch_size:
             return None
 
-        s, act, r, ns, d = self.buffer.sample(self.batch_size)
+        s, act, r, ns, d = self.buffer.sample(self.batch_size, self.device)
 
         with torch.no_grad():
             next_action, next_logp = self.actor(ns)
@@ -249,9 +291,9 @@ class SACAgent:
 
     def load_checkpoint(self, path, load_optimizers=True):
         try:
-            payload = torch.load(path, map_location=DEVICE, weights_only=False)
+            payload = torch.load(path, map_location=self.device, weights_only=False)
         except TypeError:
-            payload = torch.load(path, map_location=DEVICE)
+            payload = torch.load(path, map_location=self.device)
         meta = payload.get("meta", {})
         if meta.get("obs_dim") not in (None, self.obs_dim) or meta.get("act_dim") not in (
             None,
