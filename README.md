@@ -13,6 +13,8 @@ This repository now includes a full SAC pipeline for a balancing robot:
 - `rl/envs.py` - symulacja treningowa (`InvertedPendulumEnv`; syntetyczne IMU dla `imu_raw*`)
 - `rl/pi_runtime.py` - runtime na Raspberry Pi (prawdziwe BMI160 + silniki)
 - `train_sim.py` - simulation pretraining.
+- `train_sim_dual.py` - dual action (direction × motor power), sparse reward, γ=0.999, LR decay.
+- `rl/envs_dual.py` - `DualActionPendulumEnv` (2D action, reward 0 / -100 on fall).
 - `export_actor.py` - TorchScript export for deterministic deployment.
 - `run_policy_pi.py` - runs learned policy on Raspberry Pi.
 - `calibrate_pi.py` - stationary IMU calibration on Raspberry Pi.
@@ -73,6 +75,14 @@ Set training fall angle and randomization behavior:
 ```bash
 python train_sim.py --train-fall-angle-deg 25
 python train_sim.py --no-domain-randomization
+```
+
+Dual-action sparse-reward training (laptop only):
+
+```bash
+python train_sim_dual.py --run-name dual_sparse --hidden-dim 32 --device cpu
+# action: [direction in [-1,1], power scale in [0,1]] → force = direction * scale * F_max
+# reward: 0 alive; fall -100*(T-t)/T; episode sum 0 = full episode without fall
 ```
 
 ## Export policy

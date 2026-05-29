@@ -64,40 +64,88 @@ def _torch_load(path, full_checkpoint=False):
         return torch.load(path, map_location=DEVICE)
 
 
+def _resolve_hidden_dims(hidden_dim, hidden_dims):
+    if hidden_dims is not None:
+        dims = [int(h) for h in hidden_dims]
+        if len(dims) < 1:
+            raise ValueError("hidden_dims must have at least one layer size")
+        return dims
+    h = int(hidden_dim)
+    return [h, h]
+
+
+def _hidden_activation_module(name):
+    key = str(name).lower()
+    if key == "tanh":
+        return nn.Tanh()
+    if key == "relu":
+        return nn.ReLU()
+    raise ValueError(f"Unsupported hidden_activation: {name!r} (use 'tanh' or 'relu')")
+
+
+def _mlp_hidden_layers(in_features, hidden_dims, hidden_activation="relu"):
+    layers = []
+    width = in_features
+    act = _hidden_activation_module(hidden_activation)
+    for h in hidden_dims:
+        layers.append(nn.Linear(width, h))
+        layers.append(act)
+        width = h
+    return nn.Sequential(*layers), width
+
+
+def _infer_hidden_dims_from_actor_state(state):
+    obs_dim = int(state["net.0.weight"].shape[1])
+    dims = [int(state["net.0.weight"].shape[0])]
+    idx = 2
+    while f"net.{idx}.weight" in state:
+        dims.append(int(state[f"net.{idx}.weight"].shape[0]))
+        idx += 2
+    return obs_dim, dims
+
+
 def infer_dims_from_actor_file(path):
     """
-    Read obs_dim, act_dim, hidden_dim from actor-only or full SAC checkpoint.
+    Read obs_dim, act_dim, hidden_dims (list) from actor-only or full SAC checkpoint.
     """
     payload = _torch_load(path, full_checkpoint=True)
     if isinstance(payload, dict) and "actor" in payload:
         meta = payload.get("meta", {})
-        if meta.get("hidden_dim") is not None:
+        if meta.get("hidden_dims") is not None:
             return (
                 int(meta["obs_dim"]),
                 int(meta["act_dim"]),
-                int(meta["hidden_dim"]),
+                [int(h) for h in meta["hidden_dims"]],
             )
+        if meta.get("hidden_dim") is not None:
+            h = int(meta["hidden_dim"])
+            return int(meta["obs_dim"]), int(meta["act_dim"]), [h, h]
         state = payload["actor"]
     else:
         state = payload
 
-    hidden_dim = int(state["net.0.weight"].shape[0])
-    obs_dim = int(state["net.0.weight"].shape[1])
+    obs_dim, hidden_dims = _infer_hidden_dims_from_actor_state(state)
     act_dim = int(state["mean.weight"].shape[0])
-    return obs_dim, act_dim, hidden_dim
+    return obs_dim, act_dim, hidden_dims
 
 
 class SquashedGaussianActor(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_dim=DEFAULT_HIDDEN_DIM):
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        hidden_dim=DEFAULT_HIDDEN_DIM,
+        hidden_dims=None,
+        hidden_activation="relu",
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+        self.hidden_dims = _resolve_hidden_dims(hidden_dim, hidden_dims)
+        self.hidden_activation = str(hidden_activation)
+        self.net, last = _mlp_hidden_layers(
+            obs_dim, self.hidden_dims, hidden_activation=self.hidden_activation
         )
-        self.mean = nn.Linear(hidden_dim, act_dim)
-        self.log_std = nn.Linear(hidden_dim, act_dim)
+        self.mean = nn.Linear(last, act_dim)
+        self.log_std = nn.Linear(last, act_dim)
 
     def forward(self, obs, deterministic=False, with_logprob=True):
         h = self.net(obs)
@@ -119,15 +167,20 @@ class SquashedGaussianActor(nn.Module):
 
 
 class QNetwork(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_dim=DEFAULT_HIDDEN_DIM):
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        hidden_dim=DEFAULT_HIDDEN_DIM,
+        hidden_dims=None,
+        hidden_activation="relu",
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim + act_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
+        hidden_dims = _resolve_hidden_dims(hidden_dim, hidden_dims)
+        body, last = _mlp_hidden_layers(
+            obs_dim + act_dim, hidden_dims, hidden_activation=hidden_activation
         )
+        self.net = nn.Sequential(body, nn.Linear(last, 1))
 
     def forward(self, obs, act):
         return self.net(torch.cat([obs, act], dim=-1))
@@ -165,6 +218,8 @@ class SACAgent:
         alpha=0.2,
         lr=DEFAULT_LR,
         hidden_dim=DEFAULT_HIDDEN_DIM,
+        hidden_dims=None,
+        hidden_activation="relu",
         buffer_size=100_000,
         batch_size=256,
         device=None,
@@ -175,16 +230,19 @@ class SACAgent:
         self.batch_size = batch_size
         self.obs_dim = obs_dim
         self.act_dim = act_dim
-        self.hidden_dim = hidden_dim
+        self.hidden_dims = _resolve_hidden_dims(hidden_dim, hidden_dims)
+        self.hidden_dim = self.hidden_dims[-1]
+        self.hidden_activation = str(hidden_activation)
         self.lr = lr
         self.buffer_size = buffer_size
         self.device = resolve_device(device)
 
-        self.actor = SquashedGaussianActor(obs_dim, act_dim, hidden_dim).to(self.device)
-        self.q1 = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
-        self.q2 = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
-        self.q1_target = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
-        self.q2_target = QNetwork(obs_dim, act_dim, hidden_dim).to(self.device)
+        act_kw = dict(hidden_dims=self.hidden_dims, hidden_activation=self.hidden_activation)
+        self.actor = SquashedGaussianActor(obs_dim, act_dim, **act_kw).to(self.device)
+        self.q1 = QNetwork(obs_dim, act_dim, **act_kw).to(self.device)
+        self.q2 = QNetwork(obs_dim, act_dim, **act_kw).to(self.device)
+        self.q1_target = QNetwork(obs_dim, act_dim, **act_kw).to(self.device)
+        self.q2_target = QNetwork(obs_dim, act_dim, **act_kw).to(self.device)
         self.q1_target.load_state_dict(self.q1.state_dict())
         self.q2_target.load_state_dict(self.q2.state_dict())
 
@@ -266,12 +324,26 @@ class SACAgent:
         self.q1.train()
         self.q2.train()
 
+    def set_learning_rate(self, lr):
+        """Update Adam LR for actor and both critics (e.g. linear decay per episode)."""
+        self.lr = float(lr)
+        for group in self.actor_opt.param_groups:
+            group["lr"] = self.lr
+        for group in self.critic_opt.param_groups:
+            group["lr"] = self.lr
+
+    def set_alpha(self, alpha):
+        """Entropy coefficient (0 = no entropy bonus in actor/critic targets)."""
+        self.alpha = float(alpha)
+
     def save_checkpoint(self, path):
         payload = {
             "meta": {
                 "obs_dim": self.obs_dim,
                 "act_dim": self.act_dim,
                 "hidden_dim": self.hidden_dim,
+                "hidden_dims": self.hidden_dims,
+                "hidden_activation": self.hidden_activation,
                 "gamma": self.gamma,
                 "tau": self.tau,
                 "alpha": self.alpha,

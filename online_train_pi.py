@@ -86,18 +86,9 @@ def run_online_training(args):
         sys.exit(1)
 
     if resume_path is not None and resume_path.exists():
-        ckpt_obs, ckpt_act, hidden_dim = infer_dims_from_actor_file(resume_path)
+        ckpt_obs, ckpt_act, hidden_dims = infer_dims_from_actor_file(resume_path)
     else:
-        ckpt_obs, ckpt_act, ckpt_hidden = infer_dims_from_actor_file(weights_path)
-        hidden_dim = args.hidden_dim
-        if ckpt_hidden != hidden_dim:
-            print(
-                f"Error: actor ma hidden_dim={ckpt_hidden}, a agent budowany z {hidden_dim}. "
-                f"Dotrenuj nowy model w symulacji (--hidden-dim {hidden_dim}) "
-                f"lub podaj --hidden-dim {ckpt_hidden}.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        ckpt_obs, ckpt_act, hidden_dims = infer_dims_from_actor_file(weights_path)
     if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
         print(
             f"Error: checkpoint dims ({ckpt_obs},{ckpt_act}) != env ({env.obs_dim},{env.act_dim}). "
@@ -105,7 +96,7 @@ def run_online_training(args):
             file=sys.stderr,
         )
         sys.exit(1)
-    print(f"Using hidden_dim={hidden_dim}")
+    print(f"Using hidden_dims={hidden_dims}")
 
     agent = SACAgent(
         obs_dim=env.obs_dim,
@@ -113,7 +104,7 @@ def run_online_training(args):
         lr=args.lr,
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
-        hidden_dim=hidden_dim,
+        hidden_dims=hidden_dims,
     )
 
     if resume_path is not None and resume_path.exists():
@@ -145,7 +136,7 @@ def run_online_training(args):
     manual = not args.auto_episodes
     print(
         f"Online SAC on {torch.device('cpu')} | batch={args.batch_size} | "
-        f"hidden={hidden_dim} | Ctrl+C to stop."
+        f"hidden_dims={hidden_dims} | Ctrl+C to stop."
     )
     if manual:
         print("Tryb ręczny: każdy epizod startuje po Enter; po upadku zapis checkpointu.")

@@ -5,7 +5,13 @@ import time
 from pathlib import Path
 
 from rl.pi_runtime import RaspberryBalanceRuntime
-from rl.imu_obs import OBS_MODE_IMU_RAW12, OBS_MODE_IMU_RAW6, OBS_MODE_PROCESSED4, features_from_obs
+from rl.imu_obs import (
+    OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW6,
+    OBS_MODE_PROCESSED4,
+    features_from_obs,
+    obs_dim_for_mode,
+)
 from rl.sac import SACAgent, infer_dims_from_actor_file
 
 
@@ -32,6 +38,14 @@ def run(
     if calibration_path is not None and calibration_path.exists():
         calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
 
+    ckpt_obs, ckpt_act, hidden_dims = infer_dims_from_actor_file(Path(actor_path))
+    action_layout = "dual" if ckpt_act == 2 else "scalar"
+    if ckpt_obs != obs_dim_for_mode(obs_mode):
+        raise ValueError(
+            f"Actor obs_dim={ckpt_obs} != --obs-mode {obs_mode} "
+            f"(obs_dim={obs_dim_for_mode(obs_mode)})."
+        )
+
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(profile),
         loop_hz=loop_hz,
@@ -39,14 +53,13 @@ def run(
         imu_calibration=calibration,
         fall_angle_deg=tilt_limit_deg,
         obs_mode=obs_mode,
+        action_layout=action_layout,
     )
-    ckpt_obs, ckpt_act, hidden_dim = infer_dims_from_actor_file(Path(actor_path))
-    if ckpt_obs != env.obs_dim or ckpt_act != env.act_dim:
+    if ckpt_act != env.act_dim:
         raise ValueError(
-            f"Actor dims ({ckpt_obs},{ckpt_act}) != runtime ({env.obs_dim},{env.act_dim}). "
-            f"Użyj --obs-mode zgodny z treningiem."
+            f"Actor act_dim={ckpt_act} != runtime act_dim={env.act_dim}."
         )
-    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dim=hidden_dim)
+    agent = SACAgent(obs_dim=env.obs_dim, act_dim=env.act_dim, hidden_dims=hidden_dims)
     agent.load_actor(actor_path)
 
     csv_file = None
@@ -62,8 +75,8 @@ def run(
     tilt_limit_rad = tilt_limit_deg * 3.141592653589793 / 180.0
     obs = env.reset()
     print(
-        f"Running policy on Raspberry runtime (profile={profile}, "
-        f"motor_scale={env.motor_scale:.2f}). Ctrl+C to stop."
+        f"Running policy on Raspberry (obs_mode={obs_mode}, action={action_layout}, "
+        f"hidden_dims={hidden_dims}, motor_scale={env.motor_scale:.2f}). Ctrl+C to stop."
     )
     try:
         while True:
@@ -73,8 +86,13 @@ def run(
                 pitch, pitch_rate, x_m, x_dot = features_from_obs(
                     obs, obs_mode, calibration=calibration
                 )
+                row_action = (
+                    f"{float(action[0]):.4f},{float(action[1]):.4f}"
+                    if len(action) > 1
+                    else f"{float(action[0]):.4f}"
+                )
                 writer.writerow(
-                    [time.time(), pitch, pitch_rate, x_m, x_dot, float(action[0])]
+                    [time.time(), pitch, pitch_rate, x_m, x_dot, row_action]
                 )
             pitch, _, _, _ = features_from_obs(obs, obs_mode, calibration=calibration)
             if abs(pitch) > tilt_limit_rad:

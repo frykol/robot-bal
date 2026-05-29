@@ -5,12 +5,14 @@ import time
 import numpy as np
 
 from rl.envs import _accel_pitch_raw_rad, _angle_diff_rad, _wrap_angle_rad
+from rl.envs_dual import parse_dual_action
 from rl.imu_obs import (
     DEFAULT_IMU_BUS_IDS,
     OBS_MODE_IMU_RAW12,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     load_imu_calibration,
+    normalize_raw_imu_obs,
     obs_dim_for_mode,
     pitch_rad_for_safety,
 )
@@ -36,6 +38,8 @@ class RaspberryBalanceRuntime:
         accel_pitch_bias_rad=0.0,
         fall_angle_deg=25.0,
         obs_mode=OBS_MODE_PROCESSED4,
+        action_layout="scalar",
+        min_motor_power=0.2,
     ):
         from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
         from hardware.drive_module import DriveModule
@@ -77,7 +81,11 @@ class RaspberryBalanceRuntime:
 
         self.obs_mode = str(obs_mode)
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
-        self.act_dim = 1
+        self.action_layout = str(action_layout)
+        if self.action_layout not in ("scalar", "dual"):
+            raise ValueError("action_layout must be 'scalar' or 'dual'")
+        self.min_motor_power = float(min_motor_power)
+        self.act_dim = 2 if self.action_layout == "dual" else 1
 
     def _read_imu_raw_one(self, imu):
         ax, ay, az = imu.read_acc()
@@ -89,8 +97,10 @@ class RaspberryBalanceRuntime:
             parts = [self._read_imu_raw_one(imu) for imu in self.imus[:2]]
             if len(parts) == 1:
                 parts.append(parts[0].copy())
-            return np.concatenate(parts[:2]).astype(np.float32)
-        return self._read_imu_raw_one(self.imu)
+            raw = np.concatenate(parts[:2]).astype(np.float32)
+        else:
+            raw = self._read_imu_raw_one(self.imu)
+        return normalize_raw_imu_obs(raw)
 
     def _pitch_rad_for_done(self, obs):
         if is_raw_imu_mode(self.obs_mode):
@@ -145,8 +155,14 @@ class RaspberryBalanceRuntime:
             [self.pitch, self.pitch_rate, self.x_est, self.x_dot_est], dtype=np.float32
         )
 
+    def _motor_cmd_from_action(self, action):
+        if self.act_dim == 2:
+            direction, power = parse_dual_action(action, min_power=self.min_motor_power)
+            return float(direction * power)
+        return float(np.clip(action[0], -1.0, 1.0))
+
     def step(self, action):
-        cmd = float(np.clip(action[0], -1.0, 1.0))
+        cmd = self._motor_cmd_from_action(action)
         pwm = min(abs(cmd) * self.motor_scale, 1.0)
         if cmd >= 0:
             self.drive.forward(pwm)

@@ -4,6 +4,8 @@ from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
     OBS_MODE_PROCESSED4,
+    is_raw_imu_mode,
+    normalize_raw_imu_obs,
     obs_dim_for_mode,
     simulate_dual_imu_raw_reading,
     simulate_imu_raw_reading,
@@ -30,7 +32,7 @@ class InvertedPendulumEnv:
     Observation modes:
       - processed4: [theta, theta_dot, x, x_dot]
       - imu_raw6: one BMI160 [ax, ay, az, gx, gy, gz] LSB
-      - imu_raw12: two BMI160 [imu0(6), imu1(6)] LSB — simulated in train_sim (no I2C)
+      - imu_raw12: 2×BMI160 on top wall [6+6 LSB] via rl/imu_obs.simulate_dual_* (no I2C)
     Action: normalized in [-1, 1], internally scaled to force.
     """
 
@@ -42,6 +44,8 @@ class InvertedPendulumEnv:
         dt=0.002,
         obs_mode=OBS_MODE_PROCESSED4,
         imu_noise_std=25.0,
+        imu_mount_height_m=0.14,
+        imu_normalize_obs=True,
         m_nominal=None,
         M_nominal=None,
         force_max_nominal=None,
@@ -64,6 +68,10 @@ class InvertedPendulumEnv:
         self.force_max = self.force_max_nominal
         self.obs_mode = str(obs_mode)
         self.imu_noise_std = float(imu_noise_std)
+        h_top = float(imu_mount_height_m)
+        # Two boards on the top wall: slightly different heights along the body.
+        self.imu_heights_m = np.array([0.97 * h_top, h_top], dtype=np.float64)
+        self.imu_normalize_obs = bool(imu_normalize_obs) and is_raw_imu_mode(self.obs_mode)
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.act_dim = 1
         n_imu = 2 if self.obs_mode == OBS_MODE_IMU_RAW12 else 1
@@ -71,6 +79,7 @@ class InvertedPendulumEnv:
         self._accel_bias_lsb = np.zeros((n_imu, 3), dtype=np.float64)
         self._imu_theta_offset_rad = np.zeros(n_imu, dtype=np.float64)
         self._last_x_ddot = 0.0
+        self._last_theta_ddot = 0.0
         self.reset()
 
     def reset(self):
@@ -79,6 +88,7 @@ class InvertedPendulumEnv:
         if np.random.rand() < 0.05:
             self.state[3] += np.random.uniform(-0.5, 0.5)
         self._last_x_ddot = 0.0
+        self._last_theta_ddot = 0.0
         return self._to_obs(self.state)
 
     def _resample_dynamics(self):
@@ -102,10 +112,16 @@ class InvertedPendulumEnv:
         self._accel_bias_lsb = np.random.uniform(-200.0, 200.0, size=(n_imu, 3))
         self._imu_theta_offset_rad = np.random.uniform(-0.02, 0.02, size=n_imu)
 
+    def _finalize_obs(self, obs):
+        if self.imu_normalize_obs:
+            return normalize_raw_imu_obs(obs)
+        return obs
+
     def _to_obs(self, state, x_ddot=0.0):
         x, x_dot, theta, theta_dot = state
         if self.obs_mode == OBS_MODE_IMU_RAW12:
-            return simulate_dual_imu_raw_reading(
+            return self._finalize_obs(
+                simulate_dual_imu_raw_reading(
                 theta,
                 theta_dot,
                 x_ddot,
@@ -113,15 +129,22 @@ class InvertedPendulumEnv:
                 self._accel_bias_lsb,
                 self.imu_noise_std,
                 self._imu_theta_offset_rad,
+                self.imu_heights_m,
+                theta_ddot=self._last_theta_ddot,
+                )
             )
         if self.obs_mode == OBS_MODE_IMU_RAW6:
-            return simulate_imu_raw_reading(
-                theta,
-                theta_dot,
-                x_ddot,
-                self._gyro_bias_lsb[0],
-                self._accel_bias_lsb[0],
-                self.imu_noise_std,
+            return self._finalize_obs(
+                simulate_imu_raw_reading(
+                    theta,
+                    theta_dot,
+                    x_ddot,
+                    self._gyro_bias_lsb[0],
+                    self._accel_bias_lsb[0],
+                    self.imu_noise_std,
+                    imu_height_m=float(self.imu_heights_m[0]),
+                    theta_ddot=self._last_theta_ddot,
+                )
             )
         return np.array([theta, theta_dot, x, x_dot], dtype=np.float32)
 
@@ -138,6 +161,7 @@ class InvertedPendulumEnv:
             self.l * (4.0 / 3.0 - self.M * cos_t**2 / total_mass)
         )
         x_ddot = temp - self.M * self.l * theta_ddot * cos_t / total_mass
+        self._last_theta_ddot = float(theta_ddot)
 
         x += x_dot * self.dt
         x_dot += x_ddot * self.dt

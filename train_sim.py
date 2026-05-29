@@ -145,6 +145,7 @@ def train(
         dt=dt,
         obs_mode=obs_mode,
         imu_noise_std=imu_noise_std,
+        imu_mount_height_m=float(physics.layout.get("body_height_m", 0.14)),
     )
     agent = SACAgent(
         obs_dim=env.obs_dim,

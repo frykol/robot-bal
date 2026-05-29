@@ -28,6 +28,18 @@ def is_raw_imu_mode(obs_mode):
     return obs_mode in (OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12)
 
 
+def normalize_raw_imu_obs(obs):
+    """
+    Scale simulated/real BMI160 LSB to network-friendly units:
+    acc → g, gyro → °/s (matches typical fusion code).
+  """
+    out = np.asarray(obs, dtype=np.float32).copy()
+    for i in range(0, out.size, RAW_IMU_CHANNELS):
+        out[i : i + 3] /= ACC_LSB_PER_G
+        out[i + 3 : i + 6] /= GYR_LSB_PER_DPS
+    return out
+
+
 def rad_s_to_gyro_lsb(rate_rad_s):
     return float(np.rad2deg(rate_rad_s) * GYR_LSB_PER_DPS)
 
@@ -69,18 +81,25 @@ def simulate_imu_raw_reading(
     gyro_bias_lsb,
     accel_bias_lsb,
     noise_std,
+    imu_height_m=0.0,
+    theta_ddot=0.0,
 ):
     """
     Synthetic BMI160 reading for pitch-about-X mount (same convention as Raspberry runtime).
 
-    Body frame: X = pitch axis, Z = vertical when upright (az < 0 at rest).
+    Body frame: X = pitch axis, Z = along body toward top when upright (az < 0 at rest).
+    imu_height_m: distance from wheel axle to sensor along the body (top wall ≈ body_height).
+    Adds rigid-body tangential / centripetal terms at that height.
     """
     sin_t = np.sin(theta)
     cos_t = np.cos(theta)
+    h = float(imu_height_m)
+    td = float(theta_ddot)
+    td2 = float(theta_dot) ** 2
 
-    ax_ms2 = x_ddot + 9.81 * sin_t
+    ax_ms2 = x_ddot + 9.81 * sin_t + h * td
     ay_ms2 = 0.0
-    az_ms2 = -9.81 * cos_t
+    az_ms2 = -9.81 * cos_t - h * td2
 
     gx_lsb = rad_s_to_gyro_lsb(theta_dot)
     gy_lsb = 0.0
@@ -113,8 +132,13 @@ def simulate_dual_imu_raw_reading(
     accel_bias_lsb_pair,
     noise_std,
     theta_offsets_rad,
+    imu_heights_m,
+    theta_ddot=0.0,
 ):
-    """Two BMI160 units: independent bias/noise; optional per-IMU pitch offset (mounting)."""
+    """
+    Two BMI160 on the top wall (e.g. I2C bus 1 and 3): independent bias/noise,
+    slightly different mount height / small pitch offset per board.
+    """
     imu0 = simulate_imu_raw_reading(
         theta + float(theta_offsets_rad[0]),
         theta_dot,
@@ -122,6 +146,8 @@ def simulate_dual_imu_raw_reading(
         gyro_bias_lsb_pair[0],
         accel_bias_lsb_pair[0],
         noise_std,
+        imu_height_m=float(imu_heights_m[0]),
+        theta_ddot=theta_ddot,
     )
     imu1 = simulate_imu_raw_reading(
         theta + float(theta_offsets_rad[1]),
@@ -130,6 +156,8 @@ def simulate_dual_imu_raw_reading(
         gyro_bias_lsb_pair[1],
         accel_bias_lsb_pair[1],
         noise_std,
+        imu_height_m=float(imu_heights_m[1]),
+        theta_ddot=theta_ddot,
     )
     return np.concatenate([imu0, imu1]).astype(np.float32)
 
