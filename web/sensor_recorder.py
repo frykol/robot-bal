@@ -254,9 +254,9 @@ class SensorRecorder:
 
         if self._csv_writer is None:
             header = ["t_unix", "t_rel_s", "enc_m1", "enc_m2"]
-                for i, imu in enumerate(imus):
-                    bus = imu.get("bus_id", i)
-                    prefix = f"slot{i}_bus{bus}"
+            for i, imu in enumerate(imus):
+                bus = imu.get("bus_id", i)
+                prefix = f"slot{i}_bus{bus}"
                 header.extend(
                     [
                         f"{prefix}_ax",
