@@ -60,26 +60,54 @@ def _manual_only_html():
     <div class="status" id="status">Connecting...</div>
     <script>
         const statusDiv = document.getElementById("status");
-        const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
-        ws.onopen = () => { statusDiv.innerText = "Connected"; };
-        ws.onerror = () => { statusDiv.innerText = "WebSocket error"; };
-        ws.onclose = () => { statusDiv.innerText = "Disconnected"; };
         const slider = document.getElementById("slider");
         const value = document.getElementById("value");
-        slider.oninput = () => {
+        let ws = null;
+        const pending = [];
+
+        function wsSend(payload) {{
+            const text = JSON.stringify(payload);
+            if (ws && ws.readyState === WebSocket.OPEN) {{
+                ws.send(text);
+            }} else {{
+                pending.push(text);
+            }}
+        }}
+
+        function flushPending() {{
+            while (ws && ws.readyState === WebSocket.OPEN && pending.length) {{
+                ws.send(pending.shift());
+            }}
+        }}
+
+        function connectWs() {{
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {{
+                return;
+            }}
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${{proto}}//${{window.location.host}}/ws`);
+            ws.onopen = () => {{
+                statusDiv.innerText = "Connected";
+                flushPending();
+            }};
+            ws.onerror = () => {{ statusDiv.innerText = "WebSocket error"; }};
+            ws.onclose = () => {{
+                statusDiv.innerText = "Disconnected — retry...";
+                setTimeout(connectWs, 2000);
+            }};
+        }}
+        connectWs();
+
+        slider.oninput = () => {{
             const v = Number(slider.value);
             value.innerText = v.toFixed(2);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "motor_power", value: v }));
-            }
-        };
-        function stopMotor() {
+            wsSend({{ type: "motor_power", value: v }});
+        }};
+        function stopMotor() {{
             slider.value = 0;
             value.innerText = "0.00";
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "motor_power", value: 0 }));
-            }
-        }
+            wsSend({{ type: "motor_power", value: 0 }});
+        }}
     </script>
 </body>
 </html>
@@ -200,9 +228,62 @@ def _balance_html(default_mode):
         let pendingSeries = null;
         let charts = {{ acc: null, gyro: null, enc: null }};
 
-        const ws = new WebSocket(`ws://${{window.location.hostname}}:8000/ws`);
+        let ws = null;
+        const pending = [];
         const chkLiveCharts = document.getElementById("chkLiveCharts");
         const recordStats = document.getElementById("recordStats");
+
+        function wsSend(payload) {{
+            const text = JSON.stringify(payload);
+            if (ws && ws.readyState === WebSocket.OPEN) {{
+                ws.send(text);
+            }} else {{
+                pending.push(text);
+            }}
+        }}
+
+        function flushPending() {{
+            while (ws && ws.readyState === WebSocket.OPEN && pending.length) {{
+                ws.send(pending.shift());
+            }}
+        }}
+
+        function connectWs() {{
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {{
+                return;
+            }}
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${{proto}}//${{window.location.host}}/ws`);
+            ws.onopen = () => {{
+                statusDiv.innerText = "Połączono";
+                flushPending();
+                setMode(currentMode);
+            }};
+            ws.onerror = () => {{ statusDiv.innerText = "Błąd WebSocket"; }};
+            ws.onclose = () => {{
+                statusDiv.innerText = "Rozłączono — ponawiam...";
+                setTimeout(connectWs, 2000);
+            }};
+            ws.onmessage = (ev) => {{
+                let data;
+                try {{ data = JSON.parse(ev.data); }} catch (_) {{ return; }}
+                if (data.type === "mode") {{
+                    currentMode = data.mode === "manual" ? "manual" : "ai";
+                    renderMode();
+                }} else if (data.type === "record_status") {{
+                    if (typeof data.live_charts === "boolean") {{
+                        liveCharts = data.live_charts;
+                        chkLiveCharts.checked = liveCharts;
+                    }}
+                    renderRecording(!!data.recording, data.path, data);
+                }} else if (data.type === "record_stats") {{
+                    if (recording) renderRecording(true, null, data);
+                }} else if (data.type === "telemetry") {{
+                    if (!data.recording || !liveCharts) return;
+                    scheduleChartUpdate(data.series);
+                }}
+            }};
+        }}
 
         function renderMode() {{
             btnAi.classList.toggle("active", currentMode === "ai");
@@ -216,9 +297,7 @@ def _balance_html(default_mode):
         function setMode(mode) {{
             currentMode = mode;
             renderMode();
-            if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{ type: "set_mode", mode: mode }}));
-            }}
+            wsSend({{ type: "set_mode", mode: mode }});
             if (mode === "manual") {{
                 stopMotor();
             }}
@@ -337,9 +416,7 @@ def _balance_html(default_mode):
             liveCharts = chkLiveCharts.checked;
             chartPanel.classList.toggle("visible", recording && liveCharts);
             if (!liveCharts) destroyCharts();
-            if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{ type: "set_live_charts", enabled: liveCharts }}));
-            }}
+            wsSend({{ type: "set_live_charts", enabled: liveCharts }});
         }}
 
         function renderRecording(on, path, stats) {{
@@ -373,12 +450,12 @@ def _balance_html(default_mode):
             btnRecord.disabled = false;
             renderRecording(next, null, null);
             btnRecord.innerText = next ? "Zatrzymaj nagrywanie" : "Nagraj dane";
-            if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{
+            if (ws && ws.readyState === WebSocket.OPEN) {{
+                wsSend({{
                     type: "set_recording",
                     enabled: next,
                     live_charts: chkLiveCharts.checked,
-                }}));
+                }});
             }} else {{
                 recordPending = false;
                 btnRecord.disabled = false;
@@ -387,48 +464,21 @@ def _balance_html(default_mode):
             }}
         }}
 
-        ws.onopen = () => {{
-            statusDiv.innerText = "Połączono";
-            setMode(currentMode);
-        }};
-        ws.onerror = () => {{ statusDiv.innerText = "Błąd WebSocket"; }};
-        ws.onclose = () => {{ statusDiv.innerText = "Rozłączono"; }};
-
-        ws.onmessage = (ev) => {{
-            let data;
-            try {{ data = JSON.parse(ev.data); }} catch (_) {{ return; }}
-            if (data.type === "record_status") {{
-                if (typeof data.live_charts === "boolean") {{
-                    liveCharts = data.live_charts;
-                    chkLiveCharts.checked = liveCharts;
-                }}
-                renderRecording(!!data.recording, data.path, data);
-            }} else if (data.type === "record_stats") {{
-                if (recording) renderRecording(true, null, data);
-            }} else if (data.type === "telemetry") {{
-                if (!data.recording || !liveCharts) return;
-                scheduleChartUpdate(data.series);
-            }}
-        }};
-
         slider.oninput = () => {{
             if (currentMode !== "manual") return;
             const v = Number(slider.value);
             value.innerText = v.toFixed(2);
-            if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{ type: "motor_power", value: v }}));
-            }}
+            wsSend({{ type: "motor_power", value: v }});
         }};
 
         function stopMotor() {{
             slider.value = 0;
             value.innerText = "0.00";
-            if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{ type: "motor_power", value: 0 }}));
-            }}
+            wsSend({{ type: "motor_power", value: 0 }});
         }}
 
         renderMode();
+        connectWs();
     </script>
 </body>
 </html>
@@ -517,6 +567,9 @@ def create_app(
                         on_mode_change(mode)
                         if mode == "ai":
                             on_motor_power_change(0.0)
+                        await websocket.send_text(
+                            json.dumps({"type": "mode", "mode": mode})
+                        )
 
                 elif data.get("type") == "set_live_charts" and telemetry_hub is not None:
                     telemetry_hub.set_live_charts(bool(data.get("enabled", False)))
