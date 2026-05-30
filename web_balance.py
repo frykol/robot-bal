@@ -22,8 +22,47 @@ from rl.imu_obs import (
 )
 from rl.pi_runtime import RaspberryBalanceRuntime
 from rl.sac import SACAgent, infer_dims_from_actor_file
-from web.sensor_recorder import SensorRecorder
 from web.web_server import create_app
+
+
+def _load_sensor_recorder():
+    import importlib
+    import sys
+    from pathlib import Path
+
+    pkg_dir = Path(__file__).resolve().parent / "web"
+    if (pkg_dir / "sensor_recorder").is_dir():
+        print(
+            "Błąd: istnieje katalog web/sensor_recorder/ — usuń go "
+            "(powinien być tylko plik web/sensor_recorder.py).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        mod = importlib.import_module("web.sensor_recorder")
+    except SyntaxError as exc:
+        print(
+            f"Błąd składni web/sensor_recorder.py (linia {exc.lineno}): {exc}\n"
+            "Sprawdź: python3 -m py_compile web/sensor_recorder.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cls = getattr(mod, "SensorRecorder", None)
+    if cls is None:
+        print(
+            "web/sensor_recorder.py nie eksportuje SensorRecorder.\n"
+            f"Plik: {getattr(mod, '__file__', '?')}\n"
+            "Sprawdź: git pull && rm -rf web/__pycache__\n"
+            "        grep class SensorRecorder web/sensor_recorder.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return cls
+
+
+SensorRecorder = _load_sensor_recorder()
 
 
 class BalanceControl:

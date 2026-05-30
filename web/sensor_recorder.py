@@ -297,3 +297,6 @@ def _downsample(points: list[dict], max_points: int) -> list[dict]:
         return points
     step = max(1, n // max_points)
     return points[::step]
+
+
+__all__ = ["SensorRecorder"]
