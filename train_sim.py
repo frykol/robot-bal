@@ -101,8 +101,13 @@ def save_run_config(run_dir, config):
 def _print_physics_summary(physics):
     layout = physics.layout
     print("Physics (cart-pole):")
-    print(f"  m (axle)     = {physics.m_axle_kg:.3f} kg")
+    print(f"  m (axle)     = {physics.m_axle_kg:.3f} kg  (motors @ z=0)")
     print(f"  M (body)     = {physics.M_body_kg:.3f} kg")
+    if layout.get("battery_z_m") is not None:
+        print(
+            f"  stack z [m]  battery={layout['battery_z_m']:.3f}  "
+            f"case={layout['case_z_m']:.3f}  rpi={layout['rpi_z_m']:.3f}"
+        )
     print(f"  l (body COM) = {physics.l_body_m:.4f} m")
     print(f"  z_COM total  = {physics.z_com_full_m:.4f} m (from axle)")
     print(f"  F_max        = {physics.force_max_n:.2f} N", end="")

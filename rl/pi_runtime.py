@@ -92,6 +92,26 @@ class RaspberryBalanceRuntime:
         gx, gy, gz = imu.read_gyro()
         return np.array([ax, ay, az, gx, gy, gz], dtype=np.float32)
 
+    def read_sensor_snapshot(self):
+        """Raw BMI160 LSB + encoder counts for logging / web charts."""
+        imus = []
+        for bus_id, imu in zip(self.imu_bus_ids, self.imus):
+            ax, ay, az = imu.read_acc()
+            gx, gy, gz = imu.read_gyro()
+            imus.append(
+                {
+                    "bus_id": int(bus_id),
+                    "acc": [int(ax), int(ay), int(az)],
+                    "gyro": [int(gx), int(gy), int(gz)],
+                }
+            )
+        e1, e2 = self.drive.get_encoder_steps()
+        return {
+            "t": time.time(),
+            "imus": imus,
+            "enc": [int(e1), int(e2)],
+        }
+
     def _read_imu_raw(self):
         if self.obs_mode == OBS_MODE_IMU_RAW12:
             parts = [self._read_imu_raw_one(imu) for imu in self.imus[:2]]

@@ -95,6 +95,7 @@ python web_balance.py \
 ```
 
 - Domyślnie **AI** balansuje; przyciski **AI / Manual** na `http://<ip-pi>:8000`.
+- **Nagraj dane** — CSV z surowymi LSB acc/gyro (oba BMI160) + enkodery; 3 wykresy na żywo podczas nagrywania (`logs/sensor_recordings/`).
 - Stary test tylko suwakiem: `python web_test.py`.
 
 ### Sim → real — typowe przyczyny porażki

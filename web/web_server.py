@@ -1,7 +1,32 @@
+import asyncio
 import json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+
+
+class _WsManager:
+    def __init__(self):
+        self._connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self._connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self._connections:
+            self._connections.remove(websocket)
+
+    async def broadcast_json(self, payload: dict):
+        dead = []
+        text = json.dumps(payload)
+        for ws in self._connections:
+            try:
+                await ws.send_text(text)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
 
 
 def _manual_only_html():
@@ -91,7 +116,22 @@ def _balance_html(default_mode):
             width: 300px; height: 56px; transform: rotate(-90deg);
             appearance: none; -webkit-appearance: none; touch-action: none;
         }}
+        .record-row {{ margin: 20px 0; }}
+        .record-btn {{
+            font-size: 20px; padding: 12px 28px; border: none; border-radius: 12px;
+            cursor: pointer; background: #b71c1c; color: #fff;
+        }}
+        .record-btn.active {{ background: #2e7d32; }}
+        .record-path {{ font-size: 14px; color: #8bc34a; margin-top: 8px; word-break: break-all; }}
+        #chartPanel {{ display: none; max-width: 960px; margin: 24px auto; text-align: left; }}
+        #chartPanel.visible {{ display: block; }}
+        .chart-box {{
+            background: #1a1a1a; border-radius: 12px; padding: 12px; margin-bottom: 16px;
+        }}
+        .chart-box h3 {{ margin: 0 0 8px 4px; font-size: 16px; color: #bbb; }}
+        .chart-canvas {{ width: 100%; height: 220px; }}
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <h1>Balans robota</h1>
@@ -112,6 +152,26 @@ def _balance_html(default_mode):
 
     <div class="status" id="status">Łączenie...</div>
 
+    <div class="record-row">
+        <button id="btnRecord" class="record-btn" onclick="toggleRecording()">Nagraj dane</button>
+        <div class="record-path" id="recordPath"></div>
+    </div>
+
+    <div id="chartPanel">
+        <div class="chart-box">
+            <h3>Accelerometer (LSB) — xyz</h3>
+            <canvas id="chartAcc" class="chart-canvas"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>Gyroscope (LSB) — xyz</h3>
+            <canvas id="chartGyro" class="chart-canvas"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>Encoders (steps)</h3>
+            <canvas id="chartEnc" class="chart-canvas"></canvas>
+        </div>
+    </div>
+
     <script>
         let currentMode = "{default_mode}";
         const statusDiv = document.getElementById("status");
@@ -121,6 +181,12 @@ def _balance_html(default_mode):
         const btnManual = document.getElementById("btnManual");
         const slider = document.getElementById("slider");
         const value = document.getElementById("value");
+        const btnRecord = document.getElementById("btnRecord");
+        const recordPath = document.getElementById("recordPath");
+        const chartPanel = document.getElementById("chartPanel");
+
+        let recording = false;
+        let charts = {{ acc: null, gyro: null, enc: null }};
 
         const ws = new WebSocket(`ws://${{window.location.hostname}}:8000/ws`);
 
@@ -144,12 +210,127 @@ def _balance_html(default_mode):
             }}
         }}
 
+        function axisColors(prefix) {{
+            return {{
+                x: prefix + " rgb(244,67,54)",
+                y: prefix + " rgb(76,175,80)",
+                z: prefix + " rgb(33,150,243)",
+            }};
+        }}
+
+        function makeChart(canvasId, yTitle) {{
+            const ctx = document.getElementById(canvasId).getContext("2d");
+            return new Chart(ctx, {{
+                type: "line",
+                data: {{ labels: [], datasets: [] }},
+                options: {{
+                    animation: false,
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {{ mode: "index", intersect: false }},
+                    scales: {{
+                        x: {{ title: {{ display: true, text: "t [s]" }} }},
+                        y: {{ title: {{ display: true, text: yTitle }} }},
+                    }},
+                    plugins: {{ legend: {{ labels: {{ boxWidth: 12, font: {{ size: 11 }} }} }} }},
+                }},
+            }});
+        }}
+
+        function ensureCharts() {{
+            if (!charts.acc) {{
+                charts.acc = makeChart("chartAcc", "acc LSB");
+                charts.gyro = makeChart("chartGyro", "gyro LSB");
+                charts.enc = makeChart("chartEnc", "steps");
+            }}
+        }}
+
+        function imuDatasets(imus) {{
+            const out = [];
+            const pal = axisColors("");
+            for (let i = 0; i < imus.length; i++) {{
+                const bus = imus[i].bus_id ?? i;
+                const data = imus[i];
+                for (const axis of ["x", "y", "z"]) {{
+                    out.push({{
+                        label: `bus${{bus}} ${{axis}}`,
+                        data: data[axis],
+                        borderColor: pal[axis],
+                        borderDash: i > 0 ? [4, 3] : [],
+                        pointRadius: 0,
+                        borderWidth: 1.2,
+                        tension: 0.05,
+                    }});
+                }}
+            }}
+            return out;
+        }}
+
+        function updateCharts(series) {{
+            if (!series) return;
+            ensureCharts();
+            const labels = series.t_rel.map(t => t.toFixed(2));
+            charts.acc.data.labels = labels;
+            charts.acc.data.datasets = imuDatasets(series.acc);
+            charts.acc.update("none");
+            charts.gyro.data.labels = labels;
+            charts.gyro.data.datasets = imuDatasets(series.gyro);
+            charts.gyro.update("none");
+            charts.enc.data.labels = labels;
+            charts.enc.data.datasets = [
+                {{
+                    label: "M1",
+                    data: series.enc.m1,
+                    borderColor: "rgb(255,152,0)",
+                    pointRadius: 0,
+                    borderWidth: 1.5,
+                }},
+                {{
+                    label: "M2",
+                    data: series.enc.m2,
+                    borderColor: "rgb(156,39,176)",
+                    pointRadius: 0,
+                    borderWidth: 1.5,
+                }},
+            ];
+            charts.enc.update("none");
+        }}
+
+        function renderRecording(on, path) {{
+            recording = on;
+            btnRecord.classList.toggle("active", on);
+            btnRecord.innerText = on ? "Zatrzymaj nagrywanie" : "Nagraj dane";
+            chartPanel.classList.toggle("visible", on);
+            if (path) {{
+                recordPath.innerText = "Zapis: " + path;
+            }} else if (!on) {{
+                recordPath.innerText = recordPath.innerText || "";
+            }}
+        }}
+
+        function toggleRecording() {{
+            const next = !recording;
+            if (ws.readyState === WebSocket.OPEN) {{
+                ws.send(JSON.stringify({{ type: "set_recording", enabled: next }}));
+            }}
+        }}
+
         ws.onopen = () => {{
             statusDiv.innerText = "Połączono";
             setMode(currentMode);
         }};
         ws.onerror = () => {{ statusDiv.innerText = "Błąd WebSocket"; }};
         ws.onclose = () => {{ statusDiv.innerText = "Rozłączono"; }};
+
+        ws.onmessage = (ev) => {{
+            let data;
+            try {{ data = JSON.parse(ev.data); }} catch (_) {{ return; }}
+            if (data.type === "record_status") {{
+                renderRecording(!!data.recording, data.path);
+            }} else if (data.type === "telemetry" && data.recording && data.series) {{
+                updateCharts(data.series);
+            }}
+        }};
 
         slider.oninput = () => {{
             if (currentMode !== "manual") return;
@@ -180,6 +361,7 @@ def create_app(
     on_mode_change=None,
     default_mode="manual",
     on_disconnect=None,
+    telemetry_hub=None,
 ):
     """
     on_motor_power_change(value): suwak manual (-1..1).
@@ -187,11 +369,24 @@ def create_app(
     """
     app = FastAPI()
     balance_ui = on_mode_change is not None
+    ws_manager = _WsManager()
 
     if balance_ui:
         html = _balance_html(default_mode)
     else:
         html = _manual_only_html()
+
+    async def _telemetry_broadcast_loop():
+        while True:
+            if telemetry_hub is not None and telemetry_hub.recording:
+                payload = telemetry_hub.chart_payload()
+                await ws_manager.broadcast_json(payload)
+            await asyncio.sleep(0.05)
+
+    @app.on_event("startup")
+    async def _startup():
+        if telemetry_hub is not None:
+            asyncio.create_task(_telemetry_broadcast_loop())
 
     @app.get("/")
     async def index():
@@ -199,8 +394,11 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        await websocket.accept()
+        await ws_manager.connect(websocket)
         print("WebSocket connected")
+
+        if telemetry_hub is not None:
+            await websocket.send_text(json.dumps({"type": "record_status", **telemetry_hub.status()}))
 
         try:
             while True:
@@ -220,8 +418,13 @@ def create_app(
                         if mode == "ai":
                             on_motor_power_change(0.0)
 
+                elif data.get("type") == "set_recording" and telemetry_hub is not None:
+                    status = telemetry_hub.set_recording(bool(data.get("enabled", False)))
+                    await ws_manager.broadcast_json({"type": "record_status", **status})
+
         except WebSocketDisconnect:
             print("WebSocket disconnected")
+            ws_manager.disconnect(websocket)
             if on_disconnect is not None:
                 on_disconnect()
             else:
@@ -229,6 +432,7 @@ def create_app(
 
         except Exception as e:
             print("WebSocket error:", e)
+            ws_manager.disconnect(websocket)
             if on_disconnect is not None:
                 on_disconnect()
             else:
