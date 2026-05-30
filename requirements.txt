@@ -21,3 +21,5 @@ torch
 gpiozero
 lgpio
 smbus2
+fastapi
+uvicorn
