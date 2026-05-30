@@ -22,7 +22,7 @@ from rl.imu_obs import (
 )
 from rl.pi_runtime import RaspberryBalanceRuntime
 from rl.sac import SACAgent, infer_dims_from_actor_file
-from web.telemetry_hub import TelemetryHub
+from web.sensor_recorder import SensorRecorder
 from web.web_server import create_app
 
 
@@ -83,9 +83,10 @@ def _apply_manual_drive(env, power, motor_scale):
         env.drive.stop()
 
 
-def _maybe_record(telemetry, env):
-    if telemetry is not None and telemetry.recording:
-        telemetry.push(env.read_sensor_snapshot())
+def _offer_sensor_sample(recorder, env):
+    """Tylko kolejka — zapis CSV w wątku SensorRecorder."""
+    if recorder is not None and recorder.recording:
+        recorder.offer(env.peek_sensor_snapshot())
 
 
 def robot_loop(env, agent, control, obs_mode, calibration, tilt_limit_rad, deterministic, telemetry=None):
@@ -107,7 +108,7 @@ def robot_loop(env, agent, control, obs_mode, calibration, tilt_limit_rad, deter
             if mode == "ai":
                 action = agent.act(obs, deterministic=deterministic)
                 obs, _, done = env.step(action)
-                _maybe_record(telemetry, env)
+                _offer_sensor_sample(telemetry, env)
                 pitch, _, _, _ = features_from_obs(obs, obs_mode, calibration=calibration)
                 if done or abs(pitch) > tilt_limit_rad:
                     print("Safety stop: tilt threshold exceeded.")
@@ -117,7 +118,7 @@ def robot_loop(env, agent, control, obs_mode, calibration, tilt_limit_rad, deter
                 _apply_manual_drive(env, manual_power, env.motor_scale)
                 time.sleep(env.loop_dt)
                 obs = env._get_obs()
-                _maybe_record(telemetry, env)
+                _offer_sensor_sample(telemetry, env)
                 pitch, pitch_rate, x_m, x_dot = features_from_obs(
                     obs, obs_mode, calibration=calibration
                 )
@@ -206,7 +207,7 @@ def main():
     agent.load_actor(str(args.actor_path))
 
     control = BalanceControl(default_mode=args.default_mode)
-    telemetry = TelemetryHub(logs_dir=args.record_logs_dir)
+    telemetry = SensorRecorder(logs_dir=args.record_logs_dir)
     tilt_limit_rad = args.tilt_limit_deg * 3.141592653589793 / 180.0
 
     print(
@@ -235,7 +236,7 @@ def main():
         control.set_mode("ai")
         control.stop_manual()
         if telemetry.recording:
-            telemetry.set_recording(False)
+            telemetry.stop()
 
     app = create_app(
         on_motor_power_change=control.set_manual_power,

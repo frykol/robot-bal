@@ -186,6 +186,8 @@ def _balance_html(default_mode):
         const chartPanel = document.getElementById("chartPanel");
 
         let recording = false;
+        let recordPending = false;
+        let lastChartDrawMs = 0;
         let charts = {{ acc: null, gyro: null, enc: null }};
 
         const ws = new WebSocket(`ws://${{window.location.hostname}}:8000/ws`);
@@ -267,14 +269,19 @@ def _balance_html(default_mode):
         }}
 
         function updateCharts(series) {{
-            if (!series) return;
+            if (!series || !recording) return;
+            const now = performance.now();
+            if (now - lastChartDrawMs < 120) return;
+            lastChartDrawMs = now;
             ensureCharts();
-            const labels = series.t_rel.map(t => t.toFixed(2));
+            const labels = series.t_rel.map(t => Number(t).toFixed(2));
+            const accDs = imuDatasets(series.acc);
+            const gyroDs = imuDatasets(series.gyro);
             charts.acc.data.labels = labels;
-            charts.acc.data.datasets = imuDatasets(series.acc);
+            charts.acc.data.datasets = accDs;
             charts.acc.update("none");
             charts.gyro.data.labels = labels;
-            charts.gyro.data.datasets = imuDatasets(series.gyro);
+            charts.gyro.data.datasets = gyroDs;
             charts.gyro.update("none");
             charts.enc.data.labels = labels;
             charts.enc.data.datasets = [
@@ -296,22 +303,44 @@ def _balance_html(default_mode):
             charts.enc.update("none");
         }}
 
+        function destroyCharts() {{
+            for (const key of ["acc", "gyro", "enc"]) {{
+                if (charts[key]) {{
+                    charts[key].destroy();
+                    charts[key] = null;
+                }}
+            }}
+        }}
+
         function renderRecording(on, path) {{
             recording = on;
+            recordPending = false;
+            btnRecord.disabled = false;
             btnRecord.classList.toggle("active", on);
             btnRecord.innerText = on ? "Zatrzymaj nagrywanie" : "Nagraj dane";
             chartPanel.classList.toggle("visible", on);
+            if (!on) {{
+                destroyCharts();
+                lastChartDrawMs = 0;
+            }}
             if (path) {{
                 recordPath.innerText = "Zapis: " + path;
-            }} else if (!on) {{
-                recordPath.innerText = recordPath.innerText || "";
             }}
         }}
 
         function toggleRecording() {{
+            if (recordPending) return;
             const next = !recording;
+            recordPending = true;
+            btnRecord.disabled = true;
+            btnRecord.innerText = next ? "Zatrzymywanie..." : "Uruchamianie...";
             if (ws.readyState === WebSocket.OPEN) {{
                 ws.send(JSON.stringify({{ type: "set_recording", enabled: next }}));
+            }} else {{
+                recordPending = false;
+                btnRecord.disabled = false;
+                btnRecord.innerText = "Nagraj dane";
+                statusDiv.innerText = "Brak połączenia WebSocket";
             }}
         }}
 
@@ -327,7 +356,8 @@ def _balance_html(default_mode):
             try {{ data = JSON.parse(ev.data); }} catch (_) {{ return; }}
             if (data.type === "record_status") {{
                 renderRecording(!!data.recording, data.path);
-            }} else if (data.type === "telemetry" && data.recording && data.series) {{
+            }} else if (data.type === "telemetry") {{
+                if (!data.recording) return;
                 updateCharts(data.series);
             }}
         }};
@@ -379,9 +409,12 @@ def create_app(
     async def _telemetry_broadcast_loop():
         while True:
             if telemetry_hub is not None and telemetry_hub.recording:
-                payload = telemetry_hub.chart_payload()
-                await ws_manager.broadcast_json(payload)
-            await asyncio.sleep(0.05)
+                payload = await asyncio.to_thread(telemetry_hub.chart_payload)
+                if payload.get("recording"):
+                    await ws_manager.broadcast_json(payload)
+                await asyncio.sleep(0.1)
+            else:
+                await asyncio.sleep(0.25)
 
     @app.on_event("startup")
     async def _startup():
@@ -419,7 +452,14 @@ def create_app(
                             on_motor_power_change(0.0)
 
                 elif data.get("type") == "set_recording" and telemetry_hub is not None:
-                    status = telemetry_hub.set_recording(bool(data.get("enabled", False)))
+                    enabled = bool(data.get("enabled", False))
+                    if enabled:
+                        status = await asyncio.to_thread(telemetry_hub.start)
+                    else:
+                        status = await asyncio.to_thread(telemetry_hub.stop)
+                    await websocket.send_text(
+                        json.dumps({"type": "record_status", **status})
+                    )
                     await ws_manager.broadcast_json({"type": "record_status", **status})
 
         except WebSocketDisconnect:

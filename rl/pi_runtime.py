@@ -86,14 +86,23 @@ class RaspberryBalanceRuntime:
             raise ValueError("action_layout must be 'scalar' or 'dual'")
         self.min_motor_power = float(min_motor_power)
         self.act_dim = 2 if self.action_layout == "dual" else 1
+        self._last_sensor_snapshot = None
 
     def _read_imu_raw_one(self, imu):
         ax, ay, az = imu.read_acc()
         gx, gy, gz = imu.read_gyro()
         return np.array([ax, ay, az, gx, gy, gz], dtype=np.float32)
 
+    def _store_sensor_snapshot(self, imus):
+        e1, e2 = self.drive.get_encoder_steps()
+        self._last_sensor_snapshot = {
+            "t": time.time(),
+            "imus": imus,
+            "enc": [int(e1), int(e2)],
+        }
+
     def read_sensor_snapshot(self):
-        """Raw BMI160 LSB + encoder counts for logging / web charts."""
+        """Raw BMI160 LSB + encoder counts (extra I2C read — avoid in hot loop)."""
         imus = []
         for bus_id, imu in zip(self.imu_bus_ids, self.imus):
             ax, ay, az = imu.read_acc()
@@ -105,21 +114,41 @@ class RaspberryBalanceRuntime:
                     "gyro": [int(gx), int(gy), int(gz)],
                 }
             )
+        self._store_sensor_snapshot(imus)
+        return dict(self._last_sensor_snapshot)
+
+    def peek_sensor_snapshot(self):
+        """Ostatni odczyt z pętli sterowania + świeże enkodery (bez ponownego I2C IMU)."""
+        if self._last_sensor_snapshot is None:
+            return self.read_sensor_snapshot()
         e1, e2 = self.drive.get_encoder_steps()
-        return {
+        snap = {
             "t": time.time(),
-            "imus": imus,
+            "imus": self._last_sensor_snapshot["imus"],
             "enc": [int(e1), int(e2)],
         }
+        return snap
 
     def _read_imu_raw(self):
-        if self.obs_mode == OBS_MODE_IMU_RAW12:
-            parts = [self._read_imu_raw_one(imu) for imu in self.imus[:2]]
-            if len(parts) == 1:
-                parts.append(parts[0].copy())
-            raw = np.concatenate(parts[:2]).astype(np.float32)
-        else:
-            raw = self._read_imu_raw_one(self.imu)
+        imus = []
+        parts = []
+        for bus_id, imu in zip(self.imu_bus_ids, self.imus[:2]):
+            chunk = self._read_imu_raw_one(imu)
+            parts.append(chunk)
+            ax, ay, az = int(chunk[0]), int(chunk[1]), int(chunk[2])
+            gx, gy, gz = int(chunk[3]), int(chunk[4]), int(chunk[5])
+            imus.append(
+                {
+                    "bus_id": int(bus_id),
+                    "acc": [ax, ay, az],
+                    "gyro": [gx, gy, gz],
+                }
+            )
+        if len(parts) == 1:
+            parts.append(parts[0].copy())
+            imus.append(dict(imus[0]))
+        self._store_sensor_snapshot(imus[:2])
+        raw = np.concatenate(parts[:2]).astype(np.float32)
         return normalize_raw_imu_obs(raw)
 
     def _pitch_rad_for_done(self, obs):
@@ -170,6 +199,19 @@ class RaspberryBalanceRuntime:
         meters = steps_avg * self.encoder_step_to_m
         self.x_dot_est = (meters - self.x_est) / dt
         self.x_est = meters
+
+        imus = []
+        for bus_id, imu in zip(self.imu_bus_ids, self.imus):
+            ax, ay, az = imu.read_acc()
+            gx, gy, gz = imu.read_gyro()
+            imus.append(
+                {
+                    "bus_id": int(bus_id),
+                    "acc": [int(ax), int(ay), int(az)],
+                    "gyro": [int(gx), int(gy), int(gz)],
+                }
+            )
+        self._store_sensor_snapshot(imus)
 
         return np.array(
             [self.pitch, self.pitch_rate, self.x_est, self.x_dot_est], dtype=np.float32
