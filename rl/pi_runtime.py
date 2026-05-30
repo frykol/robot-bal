@@ -1,5 +1,6 @@
 """Raspberry Pi deployment runtime (real I2C IMU + motors). Not used by train_sim."""
 
+import copy
 import time
 
 import numpy as np
@@ -28,6 +29,8 @@ class RaspberryBalanceRuntime:
         self,
         bus_id=1,
         imu_bus_ids=None,
+        imu_primary_bus_id=1,
+        dual_physical_imu=False,
         motor_scale=0.8,
         loop_hz=100,
         pitch_alpha=0.98,
@@ -47,13 +50,19 @@ class RaspberryBalanceRuntime:
         if gyro_lsb_per_dps is None:
             gyro_lsb_per_dps = GYR_LSB_PER_DPS
 
+        self.obs_mode = str(obs_mode)
+        use_dual = bool(dual_physical_imu) and self.obs_mode == OBS_MODE_IMU_RAW12
         if imu_bus_ids is None:
-            if obs_mode == OBS_MODE_IMU_RAW12:
-                imu_bus_ids = DEFAULT_IMU_BUS_IDS
-            else:
-                imu_bus_ids = (int(bus_id),)
-        self.imu_bus_ids = tuple(int(b) for b in imu_bus_ids)
-        self.imus = [BMI160(bus_id=b) for b in self.imu_bus_ids]
+            imu_bus_ids = DEFAULT_IMU_BUS_IDS if use_dual else (int(imu_primary_bus_id),)
+        if use_dual:
+            self.imu_bus_ids = tuple(int(b) for b in imu_bus_ids)[:2]
+            self.imus = [BMI160(bus_id=b) for b in self.imu_bus_ids]
+            self.duplicate_imu12_obs = False
+        else:
+            primary = int(imu_bus_ids[0] if imu_bus_ids else imu_primary_bus_id)
+            self.imu_bus_ids = (primary,)
+            self.imus = [BMI160(bus_id=primary)]
+            self.duplicate_imu12_obs = self.obs_mode == OBS_MODE_IMU_RAW12
         self.imu = self.imus[0]
         self.drive = DriveModule()
         self.motor_scale = float(motor_scale)
@@ -68,7 +77,8 @@ class RaspberryBalanceRuntime:
                 "accel_pitch_bias_rad": accel_pitch_bias_rad,
             }
         self.imu_calibration = cal
-        self.imu_sensor_biases = load_imu_calibration(cal, n_imus=max(2, len(self.imus)))
+        n_imu_cal = 2 if self.obs_mode == OBS_MODE_IMU_RAW12 else max(1, len(self.imus))
+        self.imu_sensor_biases = load_imu_calibration(cal, n_imus=n_imu_cal)
         self.gyro_bias_dps = self.imu_sensor_biases[0]["gyro_bias_dps"]
         self.accel_pitch_bias_rad = self.imu_sensor_biases[0]["accel_pitch_bias_rad"]
         self.fall_angle_rad = np.radians(float(fall_angle_deg))
@@ -79,7 +89,6 @@ class RaspberryBalanceRuntime:
         self.x_dot_est = 0.0
         self._last_t = time.time()
 
-        self.obs_mode = str(obs_mode)
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.action_layout = str(action_layout)
         if self.action_layout not in ("scalar", "dual"):
@@ -101,19 +110,26 @@ class RaspberryBalanceRuntime:
             "enc": [int(e1), int(e2)],
         }
 
+    def _imu_dict_from_device(self, bus_id=None):
+        imu = self.imu
+        bid = int(self.imu_bus_ids[0] if bus_id is None else bus_id)
+        ax, ay, az = imu.read_acc()
+        gx, gy, gz = imu.read_gyro()
+        return {
+            "bus_id": bid,
+            "acc": [int(ax), int(ay), int(az)],
+            "gyro": [int(gx), int(gy), int(gz)],
+        }
+
+    def _snapshot_imu_list(self):
+        if self.duplicate_imu12_obs:
+            one = self._imu_dict_from_device()
+            return [one, copy.deepcopy(one)]
+        return [self._imu_dict_from_device(b) for b in self.imu_bus_ids]
+
     def read_sensor_snapshot(self):
         """Raw BMI160 LSB + encoder counts (extra I2C read — avoid in hot loop)."""
-        imus = []
-        for bus_id, imu in zip(self.imu_bus_ids, self.imus):
-            ax, ay, az = imu.read_acc()
-            gx, gy, gz = imu.read_gyro()
-            imus.append(
-                {
-                    "bus_id": int(bus_id),
-                    "acc": [int(ax), int(ay), int(az)],
-                    "gyro": [int(gx), int(gy), int(gz)],
-                }
-            )
+        imus = self._snapshot_imu_list()
         self._store_sensor_snapshot(imus)
         return dict(self._last_sensor_snapshot)
 
@@ -130,6 +146,14 @@ class RaspberryBalanceRuntime:
         return snap
 
     def _read_imu_raw(self):
+        if self.duplicate_imu12_obs:
+            chunk = self._read_imu_raw_one(self.imu)
+            one = self._imu_dict_from_device()
+            imus = [one, copy.deepcopy(one)]
+            self._store_sensor_snapshot(imus)
+            raw = np.concatenate([chunk, chunk]).astype(np.float32)
+            return normalize_raw_imu_obs(raw)
+
         imus = []
         parts = []
         for bus_id, imu in zip(self.imu_bus_ids, self.imus[:2]):
@@ -200,18 +224,7 @@ class RaspberryBalanceRuntime:
         self.x_dot_est = (meters - self.x_est) / dt
         self.x_est = meters
 
-        imus = []
-        for bus_id, imu in zip(self.imu_bus_ids, self.imus):
-            ax, ay, az = imu.read_acc()
-            gx, gy, gz = imu.read_gyro()
-            imus.append(
-                {
-                    "bus_id": int(bus_id),
-                    "acc": [int(ax), int(ay), int(az)],
-                    "gyro": [int(gx), int(gy), int(gz)],
-                }
-            )
-        self._store_sensor_snapshot(imus)
+        self._store_sensor_snapshot(self._snapshot_imu_list())
 
         return np.array(
             [self.pitch, self.pitch_rate, self.x_est, self.x_dot_est], dtype=np.float32

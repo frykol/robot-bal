@@ -22,13 +22,20 @@ def _preview_tilt_until_enter(env, hz=20):
         obs = env._get_obs()
         if env.obs_mode == OBS_MODE_IMU_RAW12:
             p0 = np.degrees(pitch_rad_from_raw_obs(obs, imu_index=0))
-            p1 = np.degrees(pitch_rad_from_raw_obs(obs, imu_index=1))
-            print(
-                f"\rIMU bus {env.imu_bus_ids[0]} pitch {p0:+6.2f}° | "
-                f"bus {env.imu_bus_ids[1]} pitch {p1:+6.2f}°   ",
-                end="",
-                flush=True,
-            )
+            if getattr(env, "duplicate_imu12_obs", False):
+                print(
+                    f"\rIMU bus {env.imu_bus_ids[0]} pitch {p0:+6.2f}° (×2 w obs)   ",
+                    end="",
+                    flush=True,
+                )
+            else:
+                p1 = np.degrees(pitch_rad_from_raw_obs(obs, imu_index=1))
+                print(
+                    f"\rIMU bus {env.imu_bus_ids[0]} pitch {p0:+6.2f}° | "
+                    f"bus {env.imu_bus_ids[1]} pitch {p1:+6.2f}°   ",
+                    end="",
+                    flush=True,
+                )
         else:
             pitch_deg = float(np.degrees(obs[0]))
             acc_deg = float(np.degrees(env._read_pitch_from_acc()))
@@ -51,11 +58,13 @@ def _preview_tilt_until_enter(env, hz=20):
         time.sleep(period)
 
 
-def main(samples, sample_dt, output_path, preview_hz, obs_mode, imu_bus_ids):
+def main(samples, sample_dt, output_path, preview_hz, obs_mode, imu_bus_id, dual_physical_imu, imu_bus_ids):
     env = RaspberryBalanceRuntime(
         motor_scale=0.0,
         loop_hz=100,
         obs_mode=obs_mode,
+        imu_primary_bus_id=imu_bus_id,
+        dual_physical_imu=dual_physical_imu,
         imu_bus_ids=imu_bus_ids,
     )
     try:
@@ -94,6 +103,8 @@ def parse_args():
         default=OBS_MODE_IMU_RAW12,
         choices=["processed4", "imu_raw6", "imu_raw12"],
     )
+    parser.add_argument("--imu-bus-id", type=int, default=1)
+    parser.add_argument("--dual-imu", action="store_true")
     parser.add_argument("--imu-bus-ids", type=int, nargs=2, default=[1, 3])
     return parser.parse_args()
 
@@ -106,5 +117,7 @@ if __name__ == "__main__":
         args.output_path,
         args.preview_hz,
         args.obs_mode,
-        tuple(args.imu_bus_ids),
+        args.imu_bus_id,
+        args.dual_imu,
+        tuple(args.imu_bus_ids) if args.dual_imu else None,
     )

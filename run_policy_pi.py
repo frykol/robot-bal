@@ -32,7 +32,9 @@ def run(
     log_path=None,
     calibration_path=None,
     obs_mode=OBS_MODE_IMU_RAW12,
-    imu_bus_ids=(1, 3),
+    imu_primary_bus_id=1,
+    dual_physical_imu=False,
+    imu_bus_ids=None,
 ):
     calibration = {}
     if calibration_path is not None and calibration_path.exists():
@@ -49,6 +51,8 @@ def run(
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(profile),
         loop_hz=loop_hz,
+        imu_primary_bus_id=imu_primary_bus_id,
+        dual_physical_imu=dual_physical_imu,
         imu_bus_ids=imu_bus_ids,
         imu_calibration=calibration,
         fall_angle_deg=tilt_limit_deg,
@@ -124,14 +128,17 @@ def parse_args():
         "--obs-mode",
         choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
         default=OBS_MODE_IMU_RAW12,
-        help="processed4 | imu_raw6 (1 czujnik) | imu_raw12 (2 czujniki I2C).",
+        help="processed4 | imu_raw6 (1 czujnik) | imu_raw12 (12D = 1 BMI160 ×2).",
     )
+    parser.add_argument("--imu-bus-id", type=int, default=1)
+    parser.add_argument("--dual-imu", action="store_true")
     parser.add_argument(
         "--imu-bus-ids",
         type=int,
         nargs=2,
         default=[1, 3],
         metavar=("BUS_A", "BUS_B"),
+        help="Tylko z --dual-imu.",
     )
     return parser.parse_args()
 
@@ -147,6 +154,8 @@ if __name__ == "__main__":
         log_path=args.log_path,
         calibration_path=args.calibration_path,
         obs_mode=args.obs_mode,
-        imu_bus_ids=tuple(args.imu_bus_ids),
+        imu_primary_bus_id=args.imu_bus_id,
+        dual_physical_imu=args.dual_imu,
+        imu_bus_ids=tuple(args.imu_bus_ids) if args.dual_imu else None,
     )
 

@@ -190,10 +190,8 @@ def features_from_obs(obs, obs_mode, accel_pitch_bias_rad=0.0, gyro_bias_dps=0.0
     if obs_mode == OBS_MODE_IMU_RAW12:
         sensors = load_imu_calibration(calibration or {}, n_imus=2)
         p0 = pitch_rad_from_raw_obs(obs, sensors[0]["accel_pitch_bias_rad"], imu_index=0)
-        p1 = pitch_rad_from_raw_obs(obs, sensors[1]["accel_pitch_bias_rad"], imu_index=1)
         r0 = pitch_rate_rad_from_raw_obs(obs, sensors[0]["gyro_bias_dps"], imu_index=0)
-        r1 = pitch_rate_rad_from_raw_obs(obs, sensors[1]["gyro_bias_dps"], imu_index=1)
-        return 0.5 * (p0 + p1), 0.5 * (r0 + r1), 0.0, 0.0
+        return p0, r0, 0.0, 0.0
     if obs_mode == OBS_MODE_IMU_RAW6:
         return (
             pitch_rad_from_raw_obs(obs, accel_pitch_bias_rad, imu_index=0),
@@ -207,9 +205,7 @@ def features_from_obs(obs, obs_mode, accel_pitch_bias_rad=0.0, gyro_bias_dps=0.0
 def pitch_rad_for_safety(obs, obs_mode, accel_pitch_bias_rad=0.0, calibration=None):
     if obs_mode == OBS_MODE_IMU_RAW12:
         sensors = load_imu_calibration(calibration or {}, n_imus=2)
-        p0 = pitch_rad_from_raw_obs(obs, sensors[0]["accel_pitch_bias_rad"], imu_index=0)
-        p1 = pitch_rad_from_raw_obs(obs, sensors[1]["accel_pitch_bias_rad"], imu_index=1)
-        return 0.5 * (p0 + p1)
+        return pitch_rad_from_raw_obs(obs, sensors[0]["accel_pitch_bias_rad"], imu_index=0)
     if is_raw_imu_mode(obs_mode):
         return pitch_rad_from_raw_obs(obs, accel_pitch_bias_rad, imu_index=0)
     return float(obs[0])

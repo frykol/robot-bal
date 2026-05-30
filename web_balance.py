@@ -157,7 +157,25 @@ def main():
         choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
         default=OBS_MODE_IMU_RAW12,
     )
-    parser.add_argument("--imu-bus-ids", type=int, nargs=2, default=[1, 3])
+    parser.add_argument(
+        "--imu-bus-id",
+        type=int,
+        default=1,
+        help="BMI160 do odczytu (domyślnie bus 1; imu_raw12 = ten sam sygnał 2× w obs).",
+    )
+    parser.add_argument(
+        "--dual-imu",
+        action="store_true",
+        help="Dwa fizyczne IMU (--imu-bus-ids 1 3); domyślnie jeden czujnik powielony.",
+    )
+    parser.add_argument(
+        "--imu-bus-ids",
+        type=int,
+        nargs=2,
+        default=[1, 3],
+        metavar=("BUS_A", "BUS_B"),
+        help="Tylko z --dual-imu.",
+    )
     parser.add_argument(
         "--default-mode",
         choices=["ai", "manual"],
@@ -187,7 +205,9 @@ def main():
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(args.profile),
         loop_hz=args.loop_hz,
-        imu_bus_ids=tuple(args.imu_bus_ids),
+        imu_primary_bus_id=args.imu_bus_id,
+        dual_physical_imu=args.dual_imu,
+        imu_bus_ids=tuple(args.imu_bus_ids) if args.dual_imu else None,
         imu_calibration=calibration,
         fall_angle_deg=args.tilt_limit_deg,
         obs_mode=args.obs_mode,
@@ -210,10 +230,15 @@ def main():
     telemetry = SensorRecorder(logs_dir=args.record_logs_dir)
     tilt_limit_rad = args.tilt_limit_deg * 3.141592653589793 / 180.0
 
+    imu_note = (
+        f"bus {env.imu_bus_ids[0]} ×2 w obs"
+        if env.duplicate_imu12_obs
+        else f"dual buses {env.imu_bus_ids}"
+    )
     print(
-        f"web_balance | obs_mode={args.obs_mode} | action={action_layout} | "
-        f"hidden_dims={hidden_dims} | motor_scale={env.motor_scale:.2f} | "
-        f"default_mode={args.default_mode}"
+        f"web_balance | obs_mode={args.obs_mode} | IMU {imu_note} | "
+        f"action={action_layout} | hidden_dims={hidden_dims} | "
+        f"motor_scale={env.motor_scale:.2f} | default_mode={args.default_mode}"
     )
 
     robot_thread = threading.Thread(

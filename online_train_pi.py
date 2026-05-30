@@ -72,7 +72,9 @@ def run_online_training(args):
     env = RaspberryBalanceRuntime(
         motor_scale=_profile_to_motor_scale(args.profile),
         loop_hz=args.loop_hz,
-        imu_bus_ids=tuple(args.imu_bus_ids),
+        imu_primary_bus_id=args.imu_bus_id,
+        dual_physical_imu=args.dual_imu,
+        imu_bus_ids=tuple(args.imu_bus_ids) if args.dual_imu else None,
         imu_calibration=calibration,
         fall_angle_deg=args.tilt_limit_deg,
         obs_mode=args.obs_mode,
@@ -268,13 +270,15 @@ def parse_args():
         default=OBS_MODE_IMU_RAW12,
         help="Musi zgadzać się z treningiem symulacji / actor checkpoint.",
     )
+    parser.add_argument("--imu-bus-id", type=int, default=1)
+    parser.add_argument("--dual-imu", action="store_true")
     parser.add_argument(
         "--imu-bus-ids",
         type=int,
         nargs=2,
         default=[1, 3],
         metavar=("BUS_A", "BUS_B"),
-        help="I2C bus dla dwóch BMI160 (domyślnie 1 i 3).",
+        help="Tylko z --dual-imu.",
     )
     parser.add_argument("--save-dir", type=Path, default=Path("artifacts"))
     parser.add_argument("--profile", choices=["safe", "normal", "aggressive"], default="safe")
