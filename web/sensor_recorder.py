@@ -1,8 +1,8 @@
 """
 Background sensor CSV logger — WebSocket tylko start/stop, zapis w osobnym wątku.
 
-Pętla robota wrzuca próbki do kolejki (bez dodatkowego I2C); wątek zapisu pisze CSV
-i bufor wykresu.
+Pętla robota: offer() → kolejka (nie blokuje).
+Wątek zapisu: CSV; opcjonalny bufor wykresu tylko gdy live_charts=True.
 """
 
 from __future__ import annotations
@@ -15,13 +15,20 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-CHART_WS_MAX_POINTS = 180
+CHART_WS_MAX_POINTS = 64
 
 
 class SensorRecorder:
-    def __init__(self, logs_dir=None, max_chart_points=400, sample_queue_size=256):
+    def __init__(
+        self,
+        logs_dir=None,
+        max_chart_points=120,
+        sample_queue_size=2048,
+        live_charts=False,
+    ):
         self.logs_dir = Path(logs_dir or Path("logs") / "sensor_recordings")
         self.max_chart_points = int(max_chart_points)
+        self.live_charts = bool(live_charts)
         self._sample_queue: queue.Queue = queue.Queue(maxsize=int(sample_queue_size))
         self._cmd_queue: queue.Queue = queue.Queue()
         self._chart: deque[dict] = deque(maxlen=self.max_chart_points)
@@ -32,10 +39,43 @@ class SensorRecorder:
         self._csv_file = None
         self._csv_writer = None
         self._t0: float | None = None
-        self._worker = threading.Thread(target=self._worker_loop, name="sensor-recorder", daemon=True)
+        self.rows_written = 0
+        self.dropped_samples = 0
+        self._worker = threading.Thread(
+            target=self._worker_loop, name="sensor-recorder", daemon=True
+        )
         self._worker.start()
 
+    def set_live_charts(self, enabled: bool) -> None:
+        self.live_charts = bool(enabled)
+        if not self.live_charts:
+            with self._chart_lock:
+                self._chart.clear()
+
+    def request_start(self) -> dict:
+        """Natychmiastowy sygnał start — bez czekania na otwarcie pliku."""
+        self._cmd_queue.put(("start", None))
+        return {
+            "recording": True,
+            "pending": True,
+            "path": None,
+            "rows": self.rows_written,
+            "live_charts": self.live_charts,
+        }
+
+    def request_stop(self) -> dict:
+        """Natychmiastowy sygnał stop — flush CSV w tle."""
+        self._cmd_queue.put(("stop", None))
+        return {
+            "recording": False,
+            "pending": True,
+            "path": self._last_saved_path,
+            "rows": self.rows_written,
+            "live_charts": self.live_charts,
+        }
+
     def start(self) -> dict:
+        """Synchronizowany start (np. disconnect); blokuje do otwarcia pliku."""
         done = threading.Event()
         self._cmd_queue.put(("start", done))
         done.wait(timeout=10.0)
@@ -44,7 +84,7 @@ class SensorRecorder:
     def stop(self) -> dict:
         done = threading.Event()
         self._cmd_queue.put(("stop", done))
-        done.wait(timeout=10.0)
+        done.wait(timeout=15.0)
         status = self.status()
         if self._last_saved_path:
             status["path"] = self._last_saved_path
@@ -56,7 +96,7 @@ class SensorRecorder:
         try:
             self._sample_queue.put_nowait(sample)
         except queue.Full:
-            pass
+            self.dropped_samples += 1
 
     def status(self) -> dict:
         path = self._record_path
@@ -64,15 +104,21 @@ class SensorRecorder:
             path = Path(self._last_saved_path)
         return {
             "recording": self.recording,
+            "pending": False,
             "path": str(path) if path else None,
             "points": len(self._chart),
+            "rows": self.rows_written,
+            "dropped": self.dropped_samples,
             "queue_size": self._sample_queue.qsize(),
+            "live_charts": self.live_charts,
         }
 
     def chart_payload(self) -> dict:
+        if not self.live_charts:
+            return {"type": "telemetry", "recording": self.recording, "series": None}
+
         with self._chart_lock:
-            recording = self.recording
-            if not recording:
+            if not self.recording:
                 return {"type": "telemetry", "recording": False, "series": None}
             points = list(self._chart)
             path = str(self._record_path) if self._record_path else None
@@ -107,6 +153,7 @@ class SensorRecorder:
             "type": "telemetry",
             "recording": True,
             "path": path,
+            "rows": self.rows_written,
             "series": {
                 "t_rel": t_rel,
                 "acc": acc,
@@ -129,10 +176,12 @@ class SensorRecorder:
                 kind, done = cmd
                 if kind == "start":
                     self._open_recording()
-                    done.set()
+                    if done is not None:
+                        done.set()
                 elif kind == "stop":
                     self._close_recording()
-                    done.set()
+                    if done is not None:
+                        done.set()
                 continue
 
             try:
@@ -147,6 +196,8 @@ class SensorRecorder:
         self._drain_sample_queue()
         with self._chart_lock:
             self._chart.clear()
+        self.rows_written = 0
+        self.dropped_samples = 0
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self._record_path = self.logs_dir / f"sensors_{stamp}.csv"
@@ -174,7 +225,10 @@ class SensorRecorder:
         self._csv_writer = None
         if self._record_path is not None:
             self._last_saved_path = str(self._record_path)
-            print(f"Sensor recording stopped: {self._record_path}")
+            print(
+                f"Sensor recording stopped: {self._last_saved_path} "
+                f"({self.rows_written} rows, dropped={self.dropped_samples})"
+            )
         self._record_path = None
         self._t0 = None
 
@@ -193,9 +247,10 @@ class SensorRecorder:
         imus = sample.get("imus") or []
         enc = sample.get("enc") or [0, 0]
 
-        row_chart = {"t_rel": t_rel, "imus": imus, "enc": [int(enc[0]), int(enc[1])]}
-        with self._chart_lock:
-            self._chart.append(row_chart)
+        if self.live_charts:
+            row_chart = {"t_rel": t_rel, "imus": imus, "enc": [int(enc[0]), int(enc[1])]}
+            with self._chart_lock:
+                self._chart.append(row_chart)
 
         if self._csv_writer is None:
             header = ["t_unix", "t_rel_s", "enc_m1", "enc_m2"]
@@ -230,10 +285,10 @@ class SensorRecorder:
                 ]
             )
         self._csv_writer.writerow(row)
+        self.rows_written += 1
 
-    # Alias for web_server / telemetry_hub API
     def set_recording(self, enabled: bool) -> dict:
-        return self.start() if enabled else self.stop()
+        return self.request_start() if enabled else self.request_stop()
 
 
 def _downsample(points: list[dict], max_points: int) -> list[dict]:

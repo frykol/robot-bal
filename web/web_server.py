@@ -123,6 +123,8 @@ def _balance_html(default_mode):
         }}
         .record-btn.active {{ background: #2e7d32; }}
         .record-path {{ font-size: 14px; color: #8bc34a; margin-top: 8px; word-break: break-all; }}
+        .record-stats {{ font-size: 14px; color: #888; margin-top: 6px; }}
+        .record-opt {{ display: block; margin-top: 12px; font-size: 15px; color: #aaa; cursor: pointer; }}
         #chartPanel {{ display: none; max-width: 960px; margin: 24px auto; text-align: left; }}
         #chartPanel.visible {{ display: block; }}
         .chart-box {{
@@ -154,7 +156,12 @@ def _balance_html(default_mode):
 
     <div class="record-row">
         <button id="btnRecord" class="record-btn" onclick="toggleRecording()">Nagraj dane</button>
+        <label class="record-opt">
+            <input type="checkbox" id="chkLiveCharts" onchange="onLiveChartsChange()">
+            Podgląd wykresów (wolniejsze)
+        </label>
         <div class="record-path" id="recordPath"></div>
+        <div class="record-stats" id="recordStats"></div>
     </div>
 
     <div id="chartPanel">
@@ -187,10 +194,15 @@ def _balance_html(default_mode):
 
         let recording = false;
         let recordPending = false;
+        let liveCharts = false;
         let lastChartDrawMs = 0;
+        let chartRafPending = false;
+        let pendingSeries = null;
         let charts = {{ acc: null, gyro: null, enc: null }};
 
         const ws = new WebSocket(`ws://${{window.location.hostname}}:8000/ws`);
+        const chkLiveCharts = document.getElementById("chkLiveCharts");
+        const recordStats = document.getElementById("recordStats");
 
         function renderMode() {{
             btnAi.classList.toggle("active", currentMode === "ai");
@@ -268,20 +280,21 @@ def _balance_html(default_mode):
             return out;
         }}
 
-        function updateCharts(series) {{
-            if (!series || !recording) return;
+        function flushCharts() {{
+            chartRafPending = false;
+            const series = pendingSeries;
+            pendingSeries = null;
+            if (!series || !recording || !liveCharts) return;
             const now = performance.now();
-            if (now - lastChartDrawMs < 120) return;
+            if (now - lastChartDrawMs < 900) return;
             lastChartDrawMs = now;
             ensureCharts();
-            const labels = series.t_rel.map(t => Number(t).toFixed(2));
-            const accDs = imuDatasets(series.acc);
-            const gyroDs = imuDatasets(series.gyro);
+            const labels = series.t_rel;
             charts.acc.data.labels = labels;
-            charts.acc.data.datasets = accDs;
+            charts.acc.data.datasets = imuDatasets(series.acc);
             charts.acc.update("none");
             charts.gyro.data.labels = labels;
-            charts.gyro.data.datasets = gyroDs;
+            charts.gyro.data.datasets = imuDatasets(series.gyro);
             charts.gyro.update("none");
             charts.enc.data.labels = labels;
             charts.enc.data.datasets = [
@@ -303,6 +316,14 @@ def _balance_html(default_mode):
             charts.enc.update("none");
         }}
 
+        function scheduleChartUpdate(series) {{
+            if (!liveCharts || !recording) return;
+            pendingSeries = series;
+            if (chartRafPending) return;
+            chartRafPending = true;
+            requestAnimationFrame(flushCharts);
+        }}
+
         function destroyCharts() {{
             for (const key of ["acc", "gyro", "enc"]) {{
                 if (charts[key]) {{
@@ -312,19 +333,36 @@ def _balance_html(default_mode):
             }}
         }}
 
-        function renderRecording(on, path) {{
+        function onLiveChartsChange() {{
+            liveCharts = chkLiveCharts.checked;
+            chartPanel.classList.toggle("visible", recording && liveCharts);
+            if (!liveCharts) destroyCharts();
+            if (ws.readyState === WebSocket.OPEN) {{
+                ws.send(JSON.stringify({{ type: "set_live_charts", enabled: liveCharts }}));
+            }}
+        }}
+
+        function renderRecording(on, path, stats) {{
             recording = on;
             recordPending = false;
             btnRecord.disabled = false;
             btnRecord.classList.toggle("active", on);
             btnRecord.innerText = on ? "Zatrzymaj nagrywanie" : "Nagraj dane";
-            chartPanel.classList.toggle("visible", on);
+            chartPanel.classList.toggle("visible", on && liveCharts);
+            chkLiveCharts.disabled = on;
             if (!on) {{
                 destroyCharts();
                 lastChartDrawMs = 0;
+                recordStats.innerText = "";
             }}
             if (path) {{
                 recordPath.innerText = "Zapis: " + path;
+            }}
+            if (stats && on) {{
+                let s = "Wiersze CSV: " + (stats.rows ?? "?");
+                if (stats.dropped > 0) s += " | pominięte: " + stats.dropped;
+                if (stats.queue_size > 0) s += " | kolejka: " + stats.queue_size;
+                recordStats.innerText = s;
             }}
         }}
 
@@ -332,10 +370,15 @@ def _balance_html(default_mode):
             if (recordPending) return;
             const next = !recording;
             recordPending = true;
-            btnRecord.disabled = true;
-            btnRecord.innerText = next ? "Zatrzymywanie..." : "Uruchamianie...";
+            btnRecord.disabled = false;
+            renderRecording(next, null, null);
+            btnRecord.innerText = next ? "Zatrzymaj nagrywanie" : "Nagraj dane";
             if (ws.readyState === WebSocket.OPEN) {{
-                ws.send(JSON.stringify({{ type: "set_recording", enabled: next }}));
+                ws.send(JSON.stringify({{
+                    type: "set_recording",
+                    enabled: next,
+                    live_charts: chkLiveCharts.checked,
+                }}));
             }} else {{
                 recordPending = false;
                 btnRecord.disabled = false;
@@ -355,10 +398,16 @@ def _balance_html(default_mode):
             let data;
             try {{ data = JSON.parse(ev.data); }} catch (_) {{ return; }}
             if (data.type === "record_status") {{
-                renderRecording(!!data.recording, data.path);
+                if (typeof data.live_charts === "boolean") {{
+                    liveCharts = data.live_charts;
+                    chkLiveCharts.checked = liveCharts;
+                }}
+                renderRecording(!!data.recording, data.path, data);
+            }} else if (data.type === "record_stats") {{
+                if (recording) renderRecording(true, null, data);
             }} else if (data.type === "telemetry") {{
-                if (!data.recording) return;
-                updateCharts(data.series);
+                if (!data.recording || !liveCharts) return;
+                scheduleChartUpdate(data.series);
             }}
         }};
 
@@ -406,20 +455,38 @@ def create_app(
     else:
         html = _manual_only_html()
 
-    async def _telemetry_broadcast_loop():
+    async def _recording_sideband_loop():
+        """Lekki status + opcjonalny podgląd wykresów (bez blokowania WS)."""
         while True:
             if telemetry_hub is not None and telemetry_hub.recording:
-                payload = await asyncio.to_thread(telemetry_hub.chart_payload)
-                if payload.get("recording"):
-                    await ws_manager.broadcast_json(payload)
-                await asyncio.sleep(0.1)
+                st = telemetry_hub.status()
+                await ws_manager.broadcast_json(
+                    {
+                        "type": "record_stats",
+                        "rows": st["rows"],
+                        "dropped": st["dropped"],
+                        "queue_size": st["queue_size"],
+                    }
+                )
+                if telemetry_hub.live_charts:
+                    payload = await asyncio.to_thread(telemetry_hub.chart_payload)
+                    if payload.get("series"):
+                        await ws_manager.broadcast_json(payload)
+                await asyncio.sleep(1.0)
             else:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.5)
+
+    async def _finish_recording(enabled: bool):
+        if enabled:
+            status = await asyncio.to_thread(telemetry_hub.start)
+        else:
+            status = await asyncio.to_thread(telemetry_hub.stop)
+        await ws_manager.broadcast_json({"type": "record_status", **status})
 
     @app.on_event("startup")
     async def _startup():
         if telemetry_hub is not None:
-            asyncio.create_task(_telemetry_broadcast_loop())
+            asyncio.create_task(_recording_sideband_loop())
 
     @app.get("/")
     async def index():
@@ -451,16 +518,22 @@ def create_app(
                         if mode == "ai":
                             on_motor_power_change(0.0)
 
+                elif data.get("type") == "set_live_charts" and telemetry_hub is not None:
+                    telemetry_hub.set_live_charts(bool(data.get("enabled", False)))
+
                 elif data.get("type") == "set_recording" and telemetry_hub is not None:
                     enabled = bool(data.get("enabled", False))
-                    if enabled:
-                        status = await asyncio.to_thread(telemetry_hub.start)
-                    else:
-                        status = await asyncio.to_thread(telemetry_hub.stop)
+                    if "live_charts" in data:
+                        telemetry_hub.set_live_charts(bool(data["live_charts"]))
+                    status = (
+                        telemetry_hub.request_start()
+                        if enabled
+                        else telemetry_hub.request_stop()
+                    )
                     await websocket.send_text(
                         json.dumps({"type": "record_status", **status})
                     )
-                    await ws_manager.broadcast_json({"type": "record_status", **status})
+                    asyncio.create_task(_finish_recording(enabled))
 
         except WebSocketDisconnect:
             print("WebSocket disconnected")
