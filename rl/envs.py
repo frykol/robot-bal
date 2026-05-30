@@ -49,6 +49,9 @@ class InvertedPendulumEnv:
         m_nominal=None,
         M_nominal=None,
         force_max_nominal=None,
+        action_delay_steps=0,
+        max_force_delta_per_step=None,
+        static_friction_force_n=0.0,
     ):
         self.g = 9.81
 
@@ -80,10 +83,66 @@ class InvertedPendulumEnv:
         self._imu_theta_offset_rad = np.zeros(n_imu, dtype=np.float64)
         self._last_x_ddot = 0.0
         self._last_theta_ddot = 0.0
+        self.action_delay_steps = int(max(0, action_delay_steps))
+        self.max_force_delta_per_step = (
+            None if max_force_delta_per_step is None else float(max_force_delta_per_step)
+        )
+        self.static_friction_force_n = float(max(0.0, static_friction_force_n))
+        self._pending_forces = []
+        self._applied_force = 0.0
         self.reset()
+
+    def _reset_actuation(self):
+        self._pending_forces = []
+        self._applied_force = 0.0
+
+    def _actuate_force(self, desired_force_n):
+        """Opóźnienie polecenia siły, slew-rate i martwa strefa (symulacja napędu)."""
+        self._pending_forces.append(float(desired_force_n))
+        delay = self.action_delay_steps
+        if len(self._pending_forces) <= delay:
+            target = 0.0
+        else:
+            target = self._pending_forces[-1 - delay]
+
+        if self.max_force_delta_per_step is not None:
+            max_d = float(self.max_force_delta_per_step)
+            target = float(
+                np.clip(target, self._applied_force - max_d, self._applied_force + max_d)
+            )
+
+        if abs(target) < self.static_friction_force_n:
+            applied = 0.0
+        else:
+            applied = target
+        self._applied_force = applied
+        return applied
+
+    def _integrate_dynamics(self, force):
+        x, x_dot, theta, theta_dot = self.state
+        sin_t = np.sin(theta)
+        cos_t = np.cos(theta)
+        total_mass = self.M + self.m
+
+        temp = (force + self.M * self.l * theta_dot**2 * sin_t) / total_mass
+        theta_ddot = (self.g * sin_t - cos_t * temp) / (
+            self.l * (4.0 / 3.0 - self.M * cos_t**2 / total_mass)
+        )
+        x_ddot = temp - self.M * self.l * theta_ddot * cos_t / total_mass
+        self._last_theta_ddot = float(theta_ddot)
+
+        x += x_dot * self.dt
+        x_dot += x_ddot * self.dt
+        theta += theta_dot * self.dt
+        theta_dot += theta_ddot * self.dt
+
+        self.state = np.array([x, x_dot, theta, theta_dot])
+        self._last_x_ddot = float(x_ddot)
+        return theta, theta_dot
 
     def reset(self):
         self._resample_dynamics()
+        self._reset_actuation()
         self.state = np.array([0.0, 0.0, np.radians(np.random.uniform(-2, 2)), 0.0])
         if np.random.rand() < 0.05:
             self.state[3] += np.random.uniform(-0.5, 0.5)
@@ -149,27 +208,9 @@ class InvertedPendulumEnv:
         return np.array([theta, theta_dot, x, x_dot], dtype=np.float32)
 
     def step(self, action):
-        x, x_dot, theta, theta_dot = self.state
-        force = float(np.clip(action[0], -1.0, 1.0)) * self.force_max
-
-        sin_t = np.sin(theta)
-        cos_t = np.cos(theta)
-        total_mass = self.M + self.m
-
-        temp = (force + self.M * self.l * theta_dot**2 * sin_t) / total_mass
-        theta_ddot = (self.g * sin_t - cos_t * temp) / (
-            self.l * (4.0 / 3.0 - self.M * cos_t**2 / total_mass)
-        )
-        x_ddot = temp - self.M * self.l * theta_ddot * cos_t / total_mass
-        self._last_theta_ddot = float(theta_ddot)
-
-        x += x_dot * self.dt
-        x_dot += x_ddot * self.dt
-        theta += theta_dot * self.dt
-        theta_dot += theta_ddot * self.dt
-
-        self.state = np.array([x, x_dot, theta, theta_dot])
-        self._last_x_ddot = float(x_ddot)
+        desired_force = float(np.clip(action[0], -1.0, 1.0)) * self.force_max
+        force = self._actuate_force(desired_force)
+        theta, theta_dot = self._integrate_dynamics(force)
         done = bool(abs(theta) > self.theta_max)
 
         if done:

@@ -26,8 +26,11 @@ from rl.imu_obs import (
 from rl.robot_mass_model import resolve_train_physics
 from rl.sac import DEFAULT_HIDDEN_DIM, SACAgent
 from train_sim import (
+    DEFAULT_DUAL_PLOT_PATH,
+    DEFAULT_DUAL_SAVE_PATH,
     LivePlotter,
     _print_physics_summary,
+    coalesce_plot_path,
     compute_rolling_average,
     persist_training_state,
     save_run_config,
@@ -98,11 +101,9 @@ def resolve_run_paths(args):
 
     run_dir.mkdir(parents=True, exist_ok=True)
     save_path = run_dir / "actor_sim_dual.pt"
-    plot_path = run_dir / "learning_curve.png"
-    if args.save_path != Path("artifacts") / "actor_sim_dual.pt":
-        save_path = args.save_path
-    if args.plot_path != Path("artifacts") / "learning_curve.png":
-        plot_path = args.plot_path
+    if args.save_path != DEFAULT_DUAL_SAVE_PATH:
+        save_path = Path(args.save_path)
+    plot_path = coalesce_plot_path(save_path, args.plot_path, DEFAULT_DUAL_PLOT_PATH)
     return save_path, plot_path, run_dir
 
 
@@ -135,11 +136,20 @@ def train(
     alpha_start,
     alpha_end,
     alpha_decay_episodes,
+    init_angle_easy_deg,
+    curriculum_episodes,
+    alive_reward_per_step,
+    angle_reward_scale,
+    angular_rate_reward_scale,
+    action_delay_steps,
+    max_force_delta_per_step,
+    static_friction_force_n,
     device=None,
     run_dir=None,
 ):
     if run_dir is not None:
         print(f"Run output directory: {run_dir.resolve()}")
+        print(f"Plots: {Path(plot_path).resolve()} (+ learning_curve_steps.png)")
     print(
         f"Dual-action SAC | gamma={gamma} | lr {lr_start} → {lr_end} over {episodes} ep | "
         f"hidden_dims={hidden_dims} ({hidden_activation}) | buffer={buffer_size} | "
@@ -147,10 +157,20 @@ def train(
         f"obs_mode={obs_mode} (obs_dim={obs_dim_for_mode(obs_mode)}, act_dim=2)"
     )
     print(
-        f"Reward: 0 na żywych krokach; upadek: "
-        f"-{fall_penalty_max:.0f}*(T-t)/T (im później, tym mniej ujemne). "
-        f"Suma epizodu = 0 → cały epizod bez upadku."
+        f"Reward: +{alive_reward_per_step}/krok + shaping kąt/prędkość; upadek: "
+        f"-{fall_penalty_max:.0f}*(T-t)/T."
     )
+    print(
+        f"Curriculum kąta startu: ±{init_angle_easy_deg}° → ±{init_angle_deg}° "
+        f"przez {curriculum_episodes} ep."
+    )
+    if action_delay_steps or max_force_delta_per_step or static_friction_force_n:
+        print(
+            f"Actuation: delay={action_delay_steps} kroków, "
+            f"ΔF/krok={max_force_delta_per_step}, tarcie={static_friction_force_n} N."
+        )
+    else:
+        print("Actuation: idealna (bez opóźnienia/slew/tarcia) — użyj --realistic-actuation później.")
     print(
         f"Eksploracja: ep 1–{random_warmup_episodes} tylko losowe akcje; "
         f"potem alpha {alpha_start} → {alpha_end} przez {alpha_decay_episodes} ep."
@@ -186,6 +206,14 @@ def train(
         fall_penalty_max=fall_penalty_max,
         min_motor_power=min_motor_power,
         init_angle_deg=init_angle_deg,
+        init_angle_easy_deg=init_angle_easy_deg,
+        curriculum_episodes=curriculum_episodes,
+        alive_reward_per_step=alive_reward_per_step,
+        angle_reward_scale=angle_reward_scale,
+        angular_rate_reward_scale=angular_rate_reward_scale,
+        action_delay_steps=action_delay_steps,
+        max_force_delta_per_step=max_force_delta_per_step,
+        static_friction_force_n=static_friction_force_n,
     )
     agent = SACAgent(
         obs_dim=env.obs_dim,
@@ -203,7 +231,9 @@ def train(
     agent.set_alpha(alpha_start)
 
     rewards = []
+    episode_steps = []
     best_avg = -np.inf
+    best_steps_avg = -1.0
     best_path = save_path.with_name("actor_best.pt")
     checkpoint_dir = save_path.parent / "checkpoints"
     live_plot = LivePlotter(
@@ -224,6 +254,7 @@ def train(
             )
             agent.set_learning_rate(lr)
             agent.set_alpha(alpha)
+            env.set_curriculum_episode(ep, episodes)
 
             obs = env.reset()
             ep_reward = 0.0
@@ -244,20 +275,31 @@ def train(
                     break
 
             rewards.append(ep_reward)
+            episode_steps.append(ep_steps)
             completed_episodes = ep
             rolling = float(np.mean(rewards[-rolling_window:]))
+            rolling_steps = float(np.mean(episode_steps[-rolling_window:]))
+            init_deg = env._init_angle_deg
             print(
-                f"Ep {ep:04d} | lr {lr:.2e} | alpha {alpha:.3f} | steps {ep_steps:4d} | "
-                f"Reward {ep_reward:8.2f} | Avg{rolling_window} {rolling:8.2f}"
+                f"Ep {ep:04d} | lr {lr:.2e} | alpha {alpha:.3f} | init±{init_deg:.1f}° | "
+                f"steps {ep_steps:4d} | Reward {ep_reward:8.2f} | "
+                f"Avg{rolling_window} R {rolling:8.2f} S {rolling_steps:6.0f}"
                 + (" | warmup" if use_random else "")
             )
             live_plot.update(rewards, force=(ep == 1))
 
             if rolling > best_avg:
                 best_avg = rolling
+                print(f"  (best rolling reward {best_avg:.2f})")
+
+            if not use_random and rolling_steps > best_steps_avg:
+                best_steps_avg = rolling_steps
                 best_path.parent.mkdir(parents=True, exist_ok=True)
                 agent.save_actor(str(best_path))
-                print(f"New best checkpoint: {best_path} (Avg{rolling_window}={best_avg:.2f})")
+                print(
+                    f"New best checkpoint: {best_path} "
+                    f"(Avg{rolling_window} steps={best_steps_avg:.0f})"
+                )
 
             if save_every > 0 and ep % save_every == 0:
                 checkpoint_path = checkpoint_dir / f"actor_ep{ep:04d}.pt"
@@ -268,16 +310,26 @@ def train(
                     plot_path,
                     rolling_window,
                     checkpoint_path=checkpoint_path,
+                    episode_steps=episode_steps,
                 )
                 print(f"Checkpoint saved at episode {ep}")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user (Ctrl+C). Saving current state...")
     finally:
-        persist_training_state(agent, rewards, save_path, plot_path, rolling_window)
+        persist_training_state(
+            agent,
+            rewards,
+            save_path,
+            plot_path,
+            rolling_window,
+            episode_steps=episode_steps,
+        )
         live_plot.close()
         print(f"Saved training state after {completed_episodes} episodes.")
+        if best_steps_avg >= 0:
+            print(f"Best rolling steps: {best_steps_avg:.0f} -> {best_path}")
         if best_avg > -np.inf:
-            print(f"Best rolling average: {best_avg:.2f} -> {best_path}")
+            print(f"Best rolling reward (informacyjnie): {best_avg:.2f}")
 
 
 def parse_args():
@@ -289,12 +341,13 @@ def parse_args():
     parser.add_argument(
         "--save-path",
         type=Path,
-        default=Path("artifacts") / "actor_sim_dual.pt",
+        default=DEFAULT_DUAL_SAVE_PATH,
     )
     parser.add_argument(
         "--plot-path",
         type=Path,
-        default=Path("artifacts") / "learning_curve_dual.png",
+        default=DEFAULT_DUAL_PLOT_PATH,
+        help="Domyślnie: <katalog_runu>/learning_curve.png przy --run-name/--run-dir.",
     )
     parser.add_argument("--rolling-window", type=int, default=50)
     parser.add_argument("--save-every", type=int, default=50)
@@ -328,7 +381,60 @@ def parse_args():
         "--init-angle-deg",
         type=float,
         default=10.0,
-        help="Losowy start |pitch| ≤ ten kąt [deg] (domyślnie ±10°).",
+        help="Końcowy zakres losowego startu |pitch| [deg] (curriculum do tej wartości).",
+    )
+    parser.add_argument(
+        "--init-angle-easy-deg",
+        type=float,
+        default=3.0,
+        help="Początkowy zakres |pitch| przy ep. 1 [deg] (curriculum).",
+    )
+    parser.add_argument(
+        "--curriculum-episodes",
+        type=int,
+        default=400,
+        help="Epizody, w których init_angle rośnie liniowo z easy do final (0 = wyłączone).",
+    )
+    parser.add_argument(
+        "--alive-reward-per-step",
+        type=float,
+        default=0.02,
+        help="Stała nagroda za każdy krok bez upadku (przy pionie ~+0.02/krok).",
+    )
+    parser.add_argument(
+        "--angle-reward-scale",
+        type=float,
+        default=0.03,
+        help="Kara za |theta|/theta_max na żywym kroku (mniejsza = łatwiejszy sygnał).",
+    )
+    parser.add_argument(
+        "--angular-rate-reward-scale",
+        type=float,
+        default=0.02,
+        help="Kara za |theta_dot| (znormalizowana do max_pitch_rate).",
+    )
+    parser.add_argument(
+        "--action-delay-steps",
+        type=int,
+        default=0,
+        help="Opóźnienie siły [kroki]; domyślnie 0 (włącz 1–2 z --realistic-actuation).",
+    )
+    parser.add_argument(
+        "--max-force-delta-frac",
+        type=float,
+        default=0.0,
+        help="Slew-rate: max Δsiły/F_max na krok; 0 = wyłączone.",
+    )
+    parser.add_argument(
+        "--static-friction-frac",
+        type=float,
+        default=0.0,
+        help="Martwa strefa siły (ułamek F_max); 0 = wyłączone.",
+    )
+    parser.add_argument(
+        "--realistic-actuation",
+        action="store_true",
+        help="delay=2, friction=2%% F_max, slew=15%% F_max/krok (trudniejsze, bliżej Pi).",
     )
     parser.add_argument(
         "--random-warmup-episodes",
@@ -406,8 +512,8 @@ def parse_args():
     parser.add_argument(
         "--lr-start",
         type=float,
-        default=DEFAULT_LR_START,
-        help="Learning rate na początku (domyślnie 0.01 = 1/100).",
+        default=3e-4,
+        help="Learning rate na początku (domyślnie 3e-4; wyższe 0.01 bywa niestabilne).",
     )
     parser.add_argument(
         "--lr-end",
@@ -425,11 +531,25 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.realistic_actuation:
+        if args.action_delay_steps == 0:
+            args.action_delay_steps = 2
+        if args.max_force_delta_frac == 0.0:
+            args.max_force_delta_frac = 0.15
+        if args.static_friction_frac == 0.0:
+            args.static_friction_frac = 0.02
+
     args.com_from_masses = not args.manual_com_height
     physics = resolve_train_physics(args)
     args.com_height_m = physics.l_body_m
 
     save_path, plot_path, run_dir = resolve_run_paths(args)
+    max_force_delta = (
+        None
+        if args.max_force_delta_frac <= 0
+        else args.max_force_delta_frac * physics.force_max_n
+    )
+    static_friction = args.static_friction_frac * physics.force_max_n
 
     if run_dir is not None:
         save_run_config(
@@ -437,13 +557,20 @@ if __name__ == "__main__":
             {
                 "trainer": "train_sim_dual",
                 "action_layout": "direction[-1,1] * power_scale[0,1]",
-                "reward": "sparse_time_scaled_fall",
-                "alive_reward_per_step": 0.0,
+                "reward": "alive_plus_shaping_plus_time_scaled_fall",
+                "alive_reward_per_step": args.alive_reward_per_step,
+                "angle_reward_scale": args.angle_reward_scale,
+                "angular_rate_reward_scale": args.angular_rate_reward_scale,
                 "fall_penalty_max": args.fall_penalty_max,
-                "fall_formula": "-fall_penalty_max * (max_steps - step) / max_steps on fall; else 0",
-                "episode_reward_zero_means_mastered": True,
+                "fall_formula": "-fall_penalty_max * (max_steps - step) / max_steps on fall",
+                "best_checkpoint_metric": "rolling_mean_episode_steps",
                 "min_motor_power": args.min_motor_power,
                 "init_angle_deg": args.init_angle_deg,
+                "init_angle_easy_deg": args.init_angle_easy_deg,
+                "curriculum_episodes": args.curriculum_episodes,
+                "action_delay_steps": args.action_delay_steps,
+                "max_force_delta_per_step": max_force_delta,
+                "static_friction_force_n": static_friction,
                 "imu_normalize_obs": True,
                 "random_warmup_episodes": args.random_warmup_episodes,
                 "alpha_start": args.alpha_start,
@@ -505,6 +632,14 @@ if __name__ == "__main__":
         args.alpha_start,
         args.alpha_end,
         args.alpha_decay_episodes,
+        args.init_angle_easy_deg,
+        args.curriculum_episodes,
+        args.alive_reward_per_step,
+        args.angle_reward_scale,
+        args.angular_rate_reward_scale,
+        args.action_delay_steps,
+        max_force_delta,
+        static_friction,
         args.device,
         run_dir=run_dir,
     )

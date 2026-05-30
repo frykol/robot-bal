@@ -25,6 +25,17 @@ from rl.robot_mass_model import resolve_train_physics
 from rl.sac import DEFAULT_HIDDEN_DIM, DEFAULT_LR, SACAgent
 
 DEFAULT_RUNS_ROOT = Path("artifacts") / "runs"
+DEFAULT_SAVE_PATH = Path("artifacts") / "actor_sim.pt"
+DEFAULT_PLOT_PATH = Path("artifacts") / "learning_curve.png"
+DEFAULT_DUAL_SAVE_PATH = Path("artifacts") / "actor_sim_dual.pt"
+DEFAULT_DUAL_PLOT_PATH = Path("artifacts") / "learning_curve_dual.png"
+
+
+def coalesce_plot_path(save_path, user_plot_path, default_plot_path):
+    """Wykres zawsze obok wag runu, chyba że podano własny --plot-path."""
+    if Path(user_plot_path) != Path(default_plot_path):
+        return Path(user_plot_path)
+    return Path(save_path).parent / "learning_curve.png"
 
 
 def _lr_slug(lr):
@@ -73,11 +84,9 @@ def resolve_run_paths(args):
 
     run_dir.mkdir(parents=True, exist_ok=True)
     save_path = run_dir / "actor_sim.pt"
-    plot_path = run_dir / "learning_curve.png"
-    if args.save_path != Path("artifacts") / "actor_sim.pt":
-        save_path = args.save_path
-    if args.plot_path != Path("artifacts") / "learning_curve.png":
-        plot_path = args.plot_path
+    if args.save_path != DEFAULT_SAVE_PATH:
+        save_path = Path(args.save_path)
+    plot_path = coalesce_plot_path(save_path, args.plot_path, DEFAULT_PLOT_PATH)
     return save_path, plot_path, run_dir
 
 
@@ -120,6 +129,9 @@ def train(
     dt,
     obs_mode,
     imu_noise_std,
+    action_delay_steps=0,
+    max_force_delta_per_step=None,
+    static_friction_force_n=0.0,
     device=None,
     run_dir=None,
 ):
@@ -146,6 +158,9 @@ def train(
         obs_mode=obs_mode,
         imu_noise_std=imu_noise_std,
         imu_mount_height_m=float(physics.layout.get("body_height_m", 0.14)),
+        action_delay_steps=action_delay_steps,
+        max_force_delta_per_step=max_force_delta_per_step,
+        static_friction_force_n=static_friction_force_n,
     )
     agent = SACAgent(
         obs_dim=env.obs_dim,
@@ -156,7 +171,9 @@ def train(
     )
 
     rewards = []
+    episode_steps = []
     best_avg = -np.inf
+    best_steps_avg = -1.0
     best_path = save_path.with_name("actor_best.pt")
     checkpoint_dir = save_path.parent / "checkpoints"
     live_plot = LivePlotter(
@@ -169,9 +186,11 @@ def train(
         for ep in range(1, episodes + 1):
             obs = env.reset()
             ep_reward = 0.0
+            ep_steps = 0
             for _ in range(max_steps):
                 action = agent.act(obs, deterministic=False)
                 next_obs, reward, done = env.step(action)
+                ep_steps += 1
                 agent.remember(obs, action, reward, next_obs, done)
                 agent.update()
                 obs = next_obs
@@ -180,19 +199,27 @@ def train(
                     break
 
             rewards.append(ep_reward)
+            episode_steps.append(ep_steps)
             completed_episodes = ep
             rolling = float(np.mean(rewards[-rolling_window:]))
+            rolling_steps = float(np.mean(episode_steps[-rolling_window:]))
             print(
                 f"Ep {ep:04d} | Reward {ep_reward:8.2f} | "
-                f"Avg{rolling_window} {rolling:8.2f}"
+                f"Avg{rolling_window} R {rolling:8.2f} S {rolling_steps:6.0f}"
             )
             live_plot.update(rewards, force=(ep == 1))
 
             if rolling > best_avg:
                 best_avg = rolling
+
+            if rolling_steps > best_steps_avg:
+                best_steps_avg = rolling_steps
                 best_path.parent.mkdir(parents=True, exist_ok=True)
                 agent.save_actor(str(best_path))
-                print(f"New best checkpoint: {best_path} (Avg{rolling_window}={best_avg:.2f})")
+                print(
+                    f"New best checkpoint: {best_path} "
+                    f"(Avg{rolling_window} steps={best_steps_avg:.0f})"
+                )
 
             if save_every > 0 and ep % save_every == 0:
                 checkpoint_path = checkpoint_dir / f"actor_ep{ep:04d}.pt"
@@ -203,20 +230,37 @@ def train(
                     plot_path,
                     rolling_window,
                     checkpoint_path=checkpoint_path,
+                    episode_steps=episode_steps,
                 )
                 print(f"Checkpoint saved at episode {ep}")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user (Ctrl+C). Saving current state...")
     finally:
-        persist_training_state(agent, rewards, save_path, plot_path, rolling_window)
+        persist_training_state(
+            agent,
+            rewards,
+            save_path,
+            plot_path,
+            rolling_window,
+            episode_steps=episode_steps,
+        )
         live_plot.close()
         print(f"Saved training state after {completed_episodes} episodes.")
+        if best_steps_avg >= 0:
+            print(f"Best rolling steps: {best_steps_avg:.0f} -> {best_path}")
         if best_avg > -np.inf:
-            print(f"Best rolling average: {best_avg:.2f} -> {best_path}")
+            print(f"Best rolling reward (informacyjnie): {best_avg:.2f}")
+        print(f"Plots: {Path(plot_path).resolve()}")
 
 
 def persist_training_state(
-    agent, rewards, save_path, plot_path, rolling_window, checkpoint_path=None
+    agent,
+    rewards,
+    save_path,
+    plot_path,
+    rolling_window,
+    checkpoint_path=None,
+    episode_steps=None,
 ):
     save_path.parent.mkdir(parents=True, exist_ok=True)
     agent.save_actor(str(save_path))
@@ -225,24 +269,26 @@ def persist_training_state(
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         agent.save_actor(str(checkpoint_path))
         print(f"Saved episode checkpoint: {checkpoint_path}")
-    save_learning_plot(rewards, plot_path, rolling_window)
+    save_learning_plot(
+        rewards, plot_path, rolling_window, episode_steps=episode_steps
+    )
 
 
-def save_learning_plot(rewards, plot_path, rolling_window):
+def save_learning_plot(rewards, plot_path, rolling_window, episode_steps=None):
     rewards_arr = np.array(rewards, dtype=np.float32)
     if rewards_arr.size == 0:
         return
 
     rolling = compute_rolling_average(rewards_arr, rolling_window)
     episodes = np.arange(1, len(rewards_arr) + 1)
-
+    plot_path = Path(plot_path)
     plot_path.parent.mkdir(parents=True, exist_ok=True)
+    run_label = plot_path.parent.name if plot_path.parent.name else "run"
 
     plt.figure(figsize=(10, 5))
     plt.plot(episodes, rewards_arr, label="Reward / episode", alpha=0.4)
     plt.plot(episodes, rolling, label=f"Rolling avg ({rolling_window})", linewidth=2.0)
-    title = plot_path.parent.name if plot_path.parent.name else "SAC Learning Curve"
-    plt.title(f"SAC Learning Curve — {title}")
+    plt.title(f"SAC Learning Curve — {run_label}")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.grid(True, alpha=0.3)
@@ -250,7 +296,29 @@ def save_learning_plot(rewards, plot_path, rolling_window):
     plt.tight_layout()
     plt.savefig(plot_path, dpi=150)
     plt.close()
-    print(f"Saved learning curve: {plot_path}")
+    print(f"Saved learning curve: {plot_path.resolve()}")
+
+    if episode_steps is not None and len(episode_steps) > 0:
+        steps_arr = np.array(episode_steps, dtype=np.float32)
+        rolling_steps = compute_rolling_average(steps_arr, rolling_window)
+        steps_path = plot_path.with_name("learning_curve_steps.png")
+        plt.figure(figsize=(10, 5))
+        plt.plot(episodes, steps_arr, label="Steps / episode", alpha=0.4)
+        plt.plot(
+            episodes,
+            rolling_steps,
+            label=f"Rolling avg ({rolling_window})",
+            linewidth=2.0,
+        )
+        plt.title(f"Episode length — {run_label}")
+        plt.xlabel("Episode")
+        plt.ylabel("Steps")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(steps_path, dpi=150)
+        plt.close()
+        print(f"Saved steps curve: {steps_path.resolve()}")
 
 
 class LivePlotter:
@@ -326,10 +394,13 @@ def parse_args():
     # dt default is 2 ms, so 5000 steps ≈ 10 seconds per episode.
     parser.add_argument("--max-steps", type=int, default=5000)
     parser.add_argument(
-        "--save-path", type=Path, default=Path("artifacts") / "actor_sim.pt"
+        "--save-path", type=Path, default=DEFAULT_SAVE_PATH
     )
     parser.add_argument(
-        "--plot-path", type=Path, default=Path("artifacts") / "learning_curve.png"
+        "--plot-path",
+        type=Path,
+        default=DEFAULT_PLOT_PATH,
+        help="Domyślnie: <katalog_runu>/learning_curve.png przy --run-name/--run-dir.",
     )
     parser.add_argument("--rolling-window", type=int, default=50)
     parser.add_argument(
@@ -429,6 +500,24 @@ def parse_args():
         choices=["cpu", "cuda"],
         help="Urządzenie PyTorch (domyślnie: cuda jeśli wspierane, inaczej cpu).",
     )
+    parser.add_argument(
+        "--action-delay-steps",
+        type=int,
+        default=0,
+        help="Opóźnienie siły w symulacji [kroki]; 0 = wyłączone (train_sim_dual domyślnie 2).",
+    )
+    parser.add_argument(
+        "--max-force-delta-frac",
+        type=float,
+        default=0.0,
+        help="Slew-rate: max Δsiły na krok jako ułamek F_max; 0 = wyłączone.",
+    )
+    parser.add_argument(
+        "--static-friction-frac",
+        type=float,
+        default=0.0,
+        help="Martwa strefa siły (ułamek F_max); 0 = wyłączone.",
+    )
     run_group = parser.add_mutually_exclusive_group()
     run_group.add_argument(
         "--run-dir",
@@ -457,6 +546,12 @@ if __name__ == "__main__":
     args.com_height_m = physics.l_body_m
 
     save_path, plot_path, run_dir = resolve_run_paths(args)
+    max_force_delta = (
+        None
+        if args.max_force_delta_frac <= 0
+        else args.max_force_delta_frac * physics.force_max_n
+    )
+    static_friction = args.static_friction_frac * physics.force_max_n
 
     if run_dir is not None:
         save_run_config(
@@ -483,6 +578,10 @@ if __name__ == "__main__":
                 "domain_randomization": not args.no_domain_randomization,
                 "save_path": str(save_path),
                 "plot_path": str(plot_path),
+                "best_checkpoint_metric": "rolling_mean_episode_steps",
+                "action_delay_steps": args.action_delay_steps,
+                "max_force_delta_per_step": max_force_delta,
+                "static_friction_force_n": static_friction,
             },
         )
 
@@ -503,6 +602,9 @@ if __name__ == "__main__":
         args.dt,
         args.obs_mode,
         args.imu_noise_std,
+        args.action_delay_steps,
+        max_force_delta,
+        static_friction,
         args.device,
         run_dir=run_dir,
     )
