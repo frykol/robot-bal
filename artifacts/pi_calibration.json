@@ -6,15 +6,15 @@
   "imensors": [
     {
       "bus_id": 1,
-      "gyro_bias_dps": -0.19451219512195123,
-      "accel_pitch_bias_rad": -0.029418219300798278
+      "gyro_bias_dps": -0.25321646341463416,
+      "accel_pitch_bias_rad": 0.00911636577367495
     },
     {
       "bus_id": 3,
-      "gyro_bias_dps": 0.2907317073170732,
-      "accel_pitch_bias_rad": 0.010644701857342828
+      "gyro_bias_dps": -0.2466768292682927,
+      "accel_pitch_bias_rad": 0.025812987645191753
     }
   ],
-  "gyro_bias_dps": -0.19451219512195123,
-  "accel_pitch_bias_rad": -0.029418219300798278
+  "gyro_bias_dps": -0.25321646341463416,
+  "accel_pitch_bias_rad": 0.00911636577367495
 }
