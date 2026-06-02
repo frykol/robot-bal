@@ -96,11 +96,72 @@ class RaspberryBalanceRuntime:
         self.min_motor_power = float(min_motor_power)
         self.act_dim = 2 if self.action_layout == "dual" else 1
         self._last_sensor_snapshot = None
+        # For dual physical IMU (imu_raw12): optional axis sign correction on IMU1
+        # to bring both sensors into the same body frame before averaging / logging.
+        self._imu1_axis_sign = None  # np.array([sx, sy, sz], dtype=float32)
+
+        if use_dual:
+            # Infer whether the second IMU is mounted flipped (common 180° rotations).
+            self._imu1_axis_sign = self._infer_imu1_axis_sign(samples=12)
 
     def _read_imu_raw_one(self, imu):
         ax, ay, az = imu.read_acc()
         gx, gy, gz = imu.read_gyro()
         return np.array([ax, ay, az, gx, gy, gz], dtype=np.float32)
+
+    def _infer_imu1_axis_sign(self, samples=12):
+        """
+        Determine a per-axis sign vector (+1/-1) for IMU1 so its accelerometer reading
+        aligns with IMU0 at rest. We only consider 180° rotations (sign flips).
+        """
+        if len(self.imus) < 2:
+            return np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+        acc0 = []
+        acc1 = []
+        for _ in range(int(samples)):
+            a0 = self.imus[0].read_acc()
+            a1 = self.imus[1].read_acc()
+            acc0.append(np.asarray(a0, dtype=np.float32))
+            acc1.append(np.asarray(a1, dtype=np.float32))
+            time.sleep(0.005)
+
+        v0 = np.mean(acc0, axis=0)
+        v1 = np.mean(acc1, axis=0)
+
+        # Candidate sign flips (identity + common 180° flips).
+        candidates = [
+            np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 1.0, 1.0], dtype=np.float32),
+            np.array([1.0, -1.0, 1.0], dtype=np.float32),
+            np.array([1.0, 1.0, -1.0], dtype=np.float32),
+            np.array([-1.0, -1.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 1.0, -1.0], dtype=np.float32),
+            np.array([1.0, -1.0, -1.0], dtype=np.float32),
+            np.array([-1.0, -1.0, -1.0], dtype=np.float32),
+        ]
+
+        best = candidates[0]
+        best_score = -1e30
+        for s in candidates:
+            score = float(np.dot(v0, v1 * s))
+            if score > best_score:
+                best_score = score
+                best = s
+        return best
+
+    def _apply_imu1_axis_sign(self, chunk, idx):
+        """
+        Apply axis sign correction to IMU idx==1 (both acc and gyro).
+        chunk: np.array([ax, ay, az, gx, gy, gz], float32) in raw LSB.
+        """
+        if idx != 1 or self._imu1_axis_sign is None:
+            return chunk
+        s = self._imu1_axis_sign
+        out = chunk.copy()
+        out[0:3] *= s
+        out[3:6] *= s
+        return out
 
     def _store_sensor_snapshot(self, imus):
         e1, e2 = self.drive.get_encoder_steps()
@@ -156,8 +217,9 @@ class RaspberryBalanceRuntime:
 
         imus = []
         parts = []
-        for bus_id, imu in zip(self.imu_bus_ids, self.imus[:2]):
+        for idx, (bus_id, imu) in enumerate(zip(self.imu_bus_ids, self.imus[:2])):
             chunk = self._read_imu_raw_one(imu)
+            chunk = self._apply_imu1_axis_sign(chunk, idx)
             parts.append(chunk)
             ax, ay, az = int(chunk[0]), int(chunk[1]), int(chunk[2])
             gx, gy, gz = int(chunk[3]), int(chunk[4]), int(chunk[5])
@@ -263,8 +325,12 @@ class RaspberryBalanceRuntime:
             gyro_dps = []
             accel_pitch = []
             for _ in range(samples):
-                gx, _, _ = imu.read_gyro()
-                ax, _, az = imu.read_acc()
+                # Use the same axis correction as in obs (important for dual IMU average).
+                chunk = self._read_imu_raw_one(imu)
+                chunk = self._apply_imu1_axis_sign(chunk, idx)
+                gx = float(chunk[3])
+                ax = float(chunk[0])
+                az = float(chunk[2])
                 gyro_dps.append(gx / self.gyro_lsb_per_dps)
                 accel_pitch.append(_accel_pitch_raw_rad(ax, az))
                 time.sleep(sample_dt)

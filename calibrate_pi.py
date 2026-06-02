@@ -75,12 +75,21 @@ def main(samples, sample_dt, output_path, preview_hz, obs_mode, imu_bus_id, dual
         output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"Saved calibration: {output_path}")
         print(json.dumps(result, indent=2))
-        bias_deg = float(np.degrees(result["accel_pitch_bias_rad"]))
-        if abs(bias_deg) > 15.0:
-            print(
-                f"Uwaga: duży bias acc ({bias_deg:.1f}°) — robot mógł się ruszać "
-                "albo IMU jest pod innym kątem."
-            )
+        # Warn if any IMU has suspiciously large accel bias.
+        sensors = result.get("imensors") or [
+            {
+                "bus_id": imu_bus_id,
+                "accel_pitch_bias_rad": result.get("accel_pitch_bias_rad", 0.0),
+            }
+        ]
+        for s in sensors:
+            bias_deg = float(np.degrees(s.get("accel_pitch_bias_rad", 0.0)))
+            if abs(bias_deg) > 15.0:
+                bid = s.get("bus_id", "?")
+                print(
+                    f"Uwaga: duży bias acc na IMU bus {bid} ({bias_deg:.1f}°) — "
+                    "robot mógł się ruszać albo IMU jest pod innym kątem."
+                )
     finally:
         env.close()
 
