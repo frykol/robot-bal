@@ -144,6 +144,7 @@ def train(
     curriculum_episodes,
     alive_reward_per_step,
     angle_reward_scale,
+    upright_quad_scale,
     angular_rate_reward_scale,
     action_delay_steps,
     max_force_delta_per_step,
@@ -214,6 +215,7 @@ def train(
         curriculum_episodes=curriculum_episodes,
         alive_reward_per_step=alive_reward_per_step,
         angle_reward_scale=angle_reward_scale,
+        upright_quad_scale=upright_quad_scale,
         angular_rate_reward_scale=angular_rate_reward_scale,
         action_delay_steps=action_delay_steps,
         max_force_delta_per_step=max_force_delta_per_step,
@@ -421,6 +423,12 @@ def parse_args():
         help="Kara za |theta|/theta_max na żywym kroku (mniejsza = łatwiejszy sygnał).",
     )
     parser.add_argument(
+        "--upright-quad-scale",
+        type=float,
+        default=0.0,
+        help="Dodatkowa kara (kwadrat) za odchył: -scale*(|theta|/theta_max)^2.",
+    )
+    parser.add_argument(
         "--angular-rate-reward-scale",
         type=float,
         default=0.02,
@@ -573,6 +581,7 @@ if __name__ == "__main__":
                 "reward": "alive_plus_shaping_plus_time_scaled_fall",
                 "alive_reward_per_step": args.alive_reward_per_step,
                 "angle_reward_scale": args.angle_reward_scale,
+                "upright_quad_scale": args.upright_quad_scale,
                 "angular_rate_reward_scale": args.angular_rate_reward_scale,
                 "fall_penalty_max": args.fall_penalty_max,
                 "fall_formula": "-fall_penalty_max * (max_steps - step) / max_steps on fall",
@@ -649,6 +658,7 @@ if __name__ == "__main__":
         args.curriculum_episodes,
         args.alive_reward_per_step,
         args.angle_reward_scale,
+        args.upright_quad_scale,
         args.angular_rate_reward_scale,
         args.action_delay_steps,
         max_force_delta,
