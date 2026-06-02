@@ -16,6 +16,10 @@ import uvicorn
 from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     features_from_obs,
     obs_dim_for_mode,
@@ -193,7 +197,15 @@ def main():
     )
     parser.add_argument(
         "--obs-mode",
-        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        choices=[
+            OBS_MODE_PROCESSED4,
+            OBS_MODE_IMU_RAW6,
+            OBS_MODE_IMU_RAW12,
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
         default=OBS_MODE_IMU_RAW12,
     )
     parser.add_argument(

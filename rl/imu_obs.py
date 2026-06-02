@@ -5,6 +5,10 @@ import numpy as np
 OBS_MODE_PROCESSED4 = "processed4"
 OBS_MODE_IMU_RAW6 = "imu_raw6"
 OBS_MODE_IMU_RAW12 = "imu_raw12"
+OBS_MODE_IMU_RAW6_ENC1 = "imu_raw6_enc1"
+OBS_MODE_IMU_RAW12_ENC1 = "imu_raw12_enc1"
+OBS_MODE_IMU_RAW6_ENC2 = "imu_raw6_enc2"
+OBS_MODE_IMU_RAW12_ENC2 = "imu_raw12_enc2"
 
 RAW_IMU_CHANNELS = 6  # ax, ay, az, gx, gy, gz per BMI160
 
@@ -19,13 +23,28 @@ DEFAULT_IMU_BUS_IDS = (1, 3)
 def obs_dim_for_mode(obs_mode):
     if obs_mode == OBS_MODE_IMU_RAW12:
         return 2 * RAW_IMU_CHANNELS
+    if obs_mode == OBS_MODE_IMU_RAW12_ENC1:
+        return 2 * RAW_IMU_CHANNELS + 1
+    if obs_mode == OBS_MODE_IMU_RAW12_ENC2:
+        return 2 * RAW_IMU_CHANNELS + 2
     if obs_mode == OBS_MODE_IMU_RAW6:
         return RAW_IMU_CHANNELS
+    if obs_mode == OBS_MODE_IMU_RAW6_ENC1:
+        return RAW_IMU_CHANNELS + 1
+    if obs_mode == OBS_MODE_IMU_RAW6_ENC2:
+        return RAW_IMU_CHANNELS + 2
     return 4
 
 
 def is_raw_imu_mode(obs_mode):
-    return obs_mode in (OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12)
+    return obs_mode in (
+        OBS_MODE_IMU_RAW6,
+        OBS_MODE_IMU_RAW12,
+        OBS_MODE_IMU_RAW6_ENC1,
+        OBS_MODE_IMU_RAW12_ENC1,
+        OBS_MODE_IMU_RAW6_ENC2,
+        OBS_MODE_IMU_RAW12_ENC2,
+    )
 
 
 def normalize_raw_imu_obs(obs):
@@ -195,6 +214,23 @@ def features_from_obs(obs, obs_mode, accel_pitch_bias_rad=0.0, gyro_bias_dps=0.0
         r1 = pitch_rate_rad_from_raw_obs(obs, sensors[1]["gyro_bias_dps"], imu_index=1)
         # Average of both IMUs. If runtime duplicates a single IMU, p0==p1 anyway.
         return 0.5 * (p0 + p1), 0.5 * (r0 + r1), 0.0, 0.0
+    if obs_mode == OBS_MODE_IMU_RAW12_ENC1:
+        sensors = load_imu_calibration(calibration or {}, n_imus=2)
+        p0 = pitch_rad_from_raw_obs(obs, sensors[0]["accel_pitch_bias_rad"], imu_index=0)
+        r0 = pitch_rate_rad_from_raw_obs(obs, sensors[0]["gyro_bias_dps"], imu_index=0)
+        p1 = pitch_rad_from_raw_obs(obs, sensors[1]["accel_pitch_bias_rad"], imu_index=1)
+        r1 = pitch_rate_rad_from_raw_obs(obs, sensors[1]["gyro_bias_dps"], imu_index=1)
+        x_m = float(obs[2 * RAW_IMU_CHANNELS])
+        return 0.5 * (p0 + p1), 0.5 * (r0 + r1), x_m, 0.0
+    if obs_mode == OBS_MODE_IMU_RAW12_ENC2:
+        sensors = load_imu_calibration(calibration or {}, n_imus=2)
+        p0 = pitch_rad_from_raw_obs(obs, sensors[0]["accel_pitch_bias_rad"], imu_index=0)
+        r0 = pitch_rate_rad_from_raw_obs(obs, sensors[0]["gyro_bias_dps"], imu_index=0)
+        p1 = pitch_rad_from_raw_obs(obs, sensors[1]["accel_pitch_bias_rad"], imu_index=1)
+        r1 = pitch_rate_rad_from_raw_obs(obs, sensors[1]["gyro_bias_dps"], imu_index=1)
+        x_m = float(obs[2 * RAW_IMU_CHANNELS])
+        x_dot = float(obs[2 * RAW_IMU_CHANNELS + 1])
+        return 0.5 * (p0 + p1), 0.5 * (r0 + r1), x_m, x_dot
     if obs_mode == OBS_MODE_IMU_RAW6:
         return (
             pitch_rad_from_raw_obs(obs, accel_pitch_bias_rad, imu_index=0),
@@ -202,6 +238,17 @@ def features_from_obs(obs, obs_mode, accel_pitch_bias_rad=0.0, gyro_bias_dps=0.0
             0.0,
             0.0,
         )
+    if obs_mode == OBS_MODE_IMU_RAW6_ENC1:
+        p = pitch_rad_from_raw_obs(obs, accel_pitch_bias_rad, imu_index=0)
+        r = pitch_rate_rad_from_raw_obs(obs, gyro_bias_dps, imu_index=0)
+        x_m = float(obs[RAW_IMU_CHANNELS])
+        return p, r, x_m, 0.0
+    if obs_mode == OBS_MODE_IMU_RAW6_ENC2:
+        p = pitch_rad_from_raw_obs(obs, accel_pitch_bias_rad, imu_index=0)
+        r = pitch_rate_rad_from_raw_obs(obs, gyro_bias_dps, imu_index=0)
+        x_m = float(obs[RAW_IMU_CHANNELS])
+        x_dot = float(obs[RAW_IMU_CHANNELS + 1])
+        return p, r, x_m, x_dot
     return float(obs[0]), float(obs[1]), float(obs[2]), float(obs[3])
 
 

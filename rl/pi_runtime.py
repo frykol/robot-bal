@@ -10,6 +10,10 @@ from rl.envs_dual import parse_dual_action
 from rl.imu_obs import (
     DEFAULT_IMU_BUS_IDS,
     OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     load_imu_calibration,
@@ -88,6 +92,8 @@ class RaspberryBalanceRuntime:
         self.x_est = 0.0
         self.x_dot_est = 0.0
         self._last_t = time.time()
+        self._last_enc_t = self._last_t
+        self._last_enc_x = 0.0
 
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.action_layout = str(action_layout)
@@ -262,13 +268,40 @@ class RaspberryBalanceRuntime:
         self.x_est = 0.0
         self.x_dot_est = 0.0
         self._last_t = time.time()
+        self._last_enc_t = self._last_t
+        self._last_enc_x = 0.0
         self.pitch = self._read_pitch_from_acc()
         self.pitch_rate = self._read_pitch_rate_rad()
         return self._get_obs()
 
+    def _read_encoder_x(self):
+        e1, e2 = self.drive.get_encoder_steps()
+        steps_avg = 0.5 * (e1 + e2)
+        return float(steps_avg * self.encoder_step_to_m)
+
+    def _update_encoder_estimates(self):
+        now = time.time()
+        dt = max(1e-4, now - self._last_enc_t)
+        x = self._read_encoder_x()
+        self.x_dot_est = float((x - self._last_enc_x) / dt)
+        self.x_est = float(x)
+        self._last_enc_t = now
+        self._last_enc_x = x
+
     def _get_obs(self):
         if is_raw_imu_mode(self.obs_mode):
-            return self._read_imu_raw()
+            raw = self._read_imu_raw()
+            if self.obs_mode in (OBS_MODE_IMU_RAW6_ENC1, OBS_MODE_IMU_RAW12_ENC1):
+                self._update_encoder_estimates()
+                raw = np.concatenate([raw, np.array([self.x_est], dtype=np.float32)]).astype(
+                    np.float32
+                )
+            elif self.obs_mode in (OBS_MODE_IMU_RAW6_ENC2, OBS_MODE_IMU_RAW12_ENC2):
+                self._update_encoder_estimates()
+                raw = np.concatenate(
+                    [raw, np.array([self.x_est, self.x_dot_est], dtype=np.float32)]
+                ).astype(np.float32)
+            return raw
 
         now = time.time()
         dt = max(1e-4, now - self._last_t)

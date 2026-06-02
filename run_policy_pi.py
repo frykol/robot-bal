@@ -8,6 +8,10 @@ from rl.pi_runtime import RaspberryBalanceRuntime
 from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     features_from_obs,
     obs_dim_for_mode,
@@ -126,9 +130,17 @@ def parse_args():
     )
     parser.add_argument(
         "--obs-mode",
-        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        choices=[
+            OBS_MODE_PROCESSED4,
+            OBS_MODE_IMU_RAW6,
+            OBS_MODE_IMU_RAW12,
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
         default=OBS_MODE_IMU_RAW12,
-        help="processed4 | imu_raw6 (1 czujnik) | imu_raw12 (12D = 1 BMI160 ×2).",
+        help="processed4 | imu_raw6 | imu_raw12 | imu_raw6_enc1 | imu_raw12_enc1 (enc1 dokleja x_m).",
     )
     parser.add_argument("--imu-bus-id", type=int, default=1)
     parser.add_argument("--dual-imu", action="store_true")

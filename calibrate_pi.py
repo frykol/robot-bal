@@ -7,7 +7,15 @@ from pathlib import Path
 
 import numpy as np
 
-from rl.imu_obs import OBS_MODE_IMU_RAW12, pitch_rad_from_raw_obs
+from rl.imu_obs import (
+    OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW6_ENC2,
+    pitch_rad_from_raw_obs,
+)
 from rl.pi_runtime import RaspberryBalanceRuntime
 
 
@@ -110,7 +118,15 @@ def parse_args():
     parser.add_argument(
         "--obs-mode",
         default=OBS_MODE_IMU_RAW12,
-        choices=["processed4", "imu_raw6", "imu_raw12"],
+        choices=[
+            "processed4",
+            "imu_raw6",
+            "imu_raw12",
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
     )
     parser.add_argument("--imu-bus-id", type=int, default=1)
     parser.add_argument("--dual-imu", action="store_true")

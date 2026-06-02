@@ -4,6 +4,10 @@ from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
     OBS_MODE_PROCESSED4,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     is_raw_imu_mode,
     normalize_raw_imu_obs,
     obs_dim_for_mode,
@@ -77,7 +81,11 @@ class InvertedPendulumEnv:
         self.imu_normalize_obs = bool(imu_normalize_obs) and is_raw_imu_mode(self.obs_mode)
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.act_dim = 1
-        n_imu = 2 if self.obs_mode == OBS_MODE_IMU_RAW12 else 1
+        n_imu = (
+            2
+            if self.obs_mode in (OBS_MODE_IMU_RAW12, OBS_MODE_IMU_RAW12_ENC1, OBS_MODE_IMU_RAW12_ENC2)
+            else 1
+        )
         self._gyro_bias_lsb = np.zeros((n_imu, 3), dtype=np.float64)
         self._accel_bias_lsb = np.zeros((n_imu, 3), dtype=np.float64)
         self._imu_theta_offset_rad = np.zeros(n_imu, dtype=np.float64)
@@ -178,22 +186,31 @@ class InvertedPendulumEnv:
 
     def _to_obs(self, state, x_ddot=0.0):
         x, x_dot, theta, theta_dot = state
-        if self.obs_mode == OBS_MODE_IMU_RAW12:
-            return self._finalize_obs(
+        if self.obs_mode in (OBS_MODE_IMU_RAW12, OBS_MODE_IMU_RAW12_ENC1, OBS_MODE_IMU_RAW12_ENC2):
+            base = self._finalize_obs(
                 simulate_dual_imu_raw_reading(
-                theta,
-                theta_dot,
-                x_ddot,
-                self._gyro_bias_lsb,
-                self._accel_bias_lsb,
-                self.imu_noise_std,
-                self._imu_theta_offset_rad,
-                self.imu_heights_m,
-                theta_ddot=self._last_theta_ddot,
+                    theta,
+                    theta_dot,
+                    x_ddot,
+                    self._gyro_bias_lsb,
+                    self._accel_bias_lsb,
+                    self.imu_noise_std,
+                    self._imu_theta_offset_rad,
+                    self.imu_heights_m,
+                    theta_ddot=self._last_theta_ddot,
                 )
             )
-        if self.obs_mode == OBS_MODE_IMU_RAW6:
-            return self._finalize_obs(
+            if self.obs_mode == OBS_MODE_IMU_RAW12_ENC1:
+                return np.concatenate([base, np.array([x], dtype=np.float32)]).astype(
+                    np.float32
+                )
+            if self.obs_mode == OBS_MODE_IMU_RAW12_ENC2:
+                return np.concatenate(
+                    [base, np.array([x, x_dot], dtype=np.float32)]
+                ).astype(np.float32)
+            return base
+        if self.obs_mode in (OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW6_ENC1, OBS_MODE_IMU_RAW6_ENC2):
+            base = self._finalize_obs(
                 simulate_imu_raw_reading(
                     theta,
                     theta_dot,
@@ -205,6 +222,15 @@ class InvertedPendulumEnv:
                     theta_ddot=self._last_theta_ddot,
                 )
             )
+            if self.obs_mode == OBS_MODE_IMU_RAW6_ENC1:
+                return np.concatenate([base, np.array([x], dtype=np.float32)]).astype(
+                    np.float32
+                )
+            if self.obs_mode == OBS_MODE_IMU_RAW6_ENC2:
+                return np.concatenate(
+                    [base, np.array([x, x_dot], dtype=np.float32)]
+                ).astype(np.float32)
+            return base
         return np.array([theta, theta_dot, x, x_dot], dtype=np.float32)
 
     def step(self, action):

@@ -19,6 +19,10 @@ from rl.envs_dual import DualActionPendulumEnv, FALL_PENALTY_MAX
 from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     obs_dim_for_mode,
@@ -357,10 +361,19 @@ def parse_args():
     parser.add_argument("--dt", type=float, default=0.002)
     parser.add_argument(
         "--obs-mode",
-        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        choices=[
+            OBS_MODE_PROCESSED4,
+            OBS_MODE_IMU_RAW6,
+            OBS_MODE_IMU_RAW12,
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
         default=OBS_MODE_IMU_RAW12,
         help=(
             "Domyślnie imu_raw12: syntetyczne 2×BMI160 (górna ściana) w rl/imu_obs.py. "
+            "Wariant *_enc1 dokleja x_m (pozycję wózka w m). "
             "processed4 = idealny pitch (bez acc/gyro)."
         ),
     )
