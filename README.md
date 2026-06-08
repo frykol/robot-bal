@@ -12,7 +12,9 @@ This repository now includes a full SAC pipeline for a balancing robot:
 - `rl/sac.py` - SAC agent, actor, critics, replay buffer.
 - `rl/envs.py` - symulacja treningowa (`InvertedPendulumEnv`; syntetyczne IMU dla `imu_raw*`)
 - `rl/pi_runtime.py` - runtime na Raspberry Pi (prawdziwe BMI160 + silniki)
-- `train_sim.py` - simulation pretraining.
+- `train_sim.py` - simulation pretraining (SAC).
+- `train_sim_ppo.py` - simulation pretraining (PPO, clipped objective + GAE).
+- `rl/ppo.py` - PPO agent (actor-critic, on-policy rollouts).
 - `train_sim_dual.py` - dual action (direction × motor power), sparse reward, γ=0.999, LR decay.
 - `rl/envs_dual.py` - `DualActionPendulumEnv` (2D action, reward 0 / -100 on fall).
 - `export_actor.py` - TorchScript export for deterministic deployment.
@@ -46,6 +48,21 @@ bash scripts/sim_comparison_runs.sh
 ```bash
 python train_sim.py --episodes 1000 --max-steps 1000
 ```
+
+PPO baseline (scalar action, `InvertedPendulumEnv`):
+
+```bash
+python train_sim_ppo.py --run-name ppo_baseline --episodes 500 --rollout-steps 2048
+```
+
+PPO with same reward/action as SAC dual (`DualActionPendulumEnv`):
+
+```bash
+python train_sim_ppo.py --dual-action --run-name ppo_cmp_v6_dual \
+  --obs-mode imu_raw12 --hidden-dims 48 24 --episodes 800 --gamma 0.999
+```
+
+Outputs: `artifacts/runs/<run_name>/actor_sim_ppo.pt`, `actor_best_ppo.pt`, `learning_curve.png`.
 
 Compare multiple runs in separate folders:
 

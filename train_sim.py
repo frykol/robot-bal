@@ -274,7 +274,13 @@ def persist_training_state(
     )
 
 
-def save_learning_plot(rewards, plot_path, rolling_window, episode_steps=None):
+def save_learning_plot(
+    rewards,
+    plot_path,
+    rolling_window,
+    episode_steps=None,
+    algorithm="SAC",
+):
     rewards_arr = np.array(rewards, dtype=np.float32)
     if rewards_arr.size == 0:
         return
@@ -288,7 +294,7 @@ def save_learning_plot(rewards, plot_path, rolling_window, episode_steps=None):
     plt.figure(figsize=(10, 5))
     plt.plot(episodes, rewards_arr, label="Reward / episode", alpha=0.4)
     plt.plot(episodes, rolling, label=f"Rolling avg ({rolling_window})", linewidth=2.0)
-    plt.title(f"SAC Learning Curve — {run_label}")
+    plt.title(f"{algorithm} Learning Curve — {run_label}")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.grid(True, alpha=0.3)
@@ -322,7 +328,13 @@ def save_learning_plot(rewards, plot_path, rolling_window, episode_steps=None):
 
 
 class LivePlotter:
-    def __init__(self, rolling_window, enabled=True, update_every=5):
+    def __init__(
+        self,
+        rolling_window,
+        enabled=True,
+        update_every=5,
+        title="SAC Learning Curve (Live)",
+    ):
         self.rolling_window = int(max(1, rolling_window))
         self.enabled = bool(enabled)
         self.update_every = int(max(1, update_every))
@@ -337,7 +349,7 @@ class LivePlotter:
             self._fig, self._ax = plt.subplots(figsize=(10, 5))
             self._line_reward, = self._ax.plot([], [], label="Reward / episode", alpha=0.4)
             self._line_roll, = self._ax.plot([], [], label=f"Rolling avg ({self.rolling_window})", linewidth=2.0)
-            self._ax.set_title("SAC Learning Curve (Live)")
+            self._ax.set_title(title)
             self._ax.set_xlabel("Episode")
             self._ax.set_ylabel("Reward")
             self._ax.grid(True, alpha=0.3)

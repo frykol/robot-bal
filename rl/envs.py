@@ -211,6 +211,7 @@ class InvertedPendulumEnv:
         desired_force = float(np.clip(action[0], -1.0, 1.0)) * self.force_max
         force = self._actuate_force(desired_force)
         theta, theta_dot = self._integrate_dynamics(force)
+        x = float(self.state[0])
         done = bool(abs(theta) > self.theta_max)
 
         if done:

@@ -61,8 +61,9 @@ def _manual_only_html():
 """
 
 
-def _balance_html(default_mode):
-    default_mode = default_mode if default_mode in ("ai", "manual") else "ai"
+def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
+    if default_mode not in ("ai", "pid", "manual"):
+        default_mode = "ai"
     return f"""
 <!DOCTYPE html>
 <html lang="pl">
@@ -80,8 +81,23 @@ def _balance_html(default_mode):
         }}
         .mode-btn.active {{ border-color: #4caf50; background: #1b3a1f; color: #fff; }}
         .mode-btn.manual.active {{ border-color: #ff9800; background: #3a2a10; }}
+        .mode-btn.pid.active {{ border-color: #2196f3; background: #102a3a; }}
         .panel {{ opacity: 0.35; pointer-events: none; transition: opacity 0.2s; }}
         .panel.enabled {{ opacity: 1; pointer-events: auto; }}
+        .pid-grid {{
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+            max-width: 420px; margin: 0 auto 16px;
+        }}
+        .pid-field {{ text-align: center; }}
+        .pid-field label {{ display: block; font-size: 14px; color: #aaa; margin-bottom: 6px; }}
+        .pid-field input {{
+            width: 100%; font-size: 22px; padding: 10px; border-radius: 10px;
+            border: 2px solid #444; background: #222; color: #fff; text-align: center;
+        }}
+        .pid-apply {{
+            font-size: 20px; padding: 10px 28px; border: none; border-radius: 12px;
+            cursor: pointer; background: #1976d2; color: #fff; margin-bottom: 8px;
+        }}
         .value {{ font-size: 48px; margin: 20px 0; }}
         button.stop {{ font-size: 24px; padding: 12px 32px; border: none; border-radius: 12px; cursor: pointer; }}
         .status {{ margin-top: 24px; font-size: 18px; color: #aaa; }}
@@ -97,10 +113,30 @@ def _balance_html(default_mode):
     <h1>Balans robota</h1>
     <div class="mode-row">
         <button id="btnAi" class="mode-btn" onclick="setMode('ai')">AI</button>
+        <button id="btnPid" class="mode-btn pid" onclick="setMode('pid')">PID</button>
         <button id="btnManual" class="mode-btn manual" onclick="setMode('manual')">Manual</button>
     </div>
     <div class="status" id="modeLabel">Tryb: ...</div>
     <div class="hint" id="hint">Domyślnie robot balansuje sam (AI).</div>
+
+    <div id="pidPanel" class="panel">
+        <div class="pid-grid">
+            <div class="pid-field">
+                <label for="inpKp">Kp</label>
+                <input id="inpKp" type="number" step="any" value="{default_pid_kp}">
+            </div>
+            <div class="pid-field">
+                <label for="inpKi">Ki</label>
+                <input id="inpKi" type="number" step="any" value="{default_pid_ki}">
+            </div>
+            <div class="pid-field">
+                <label for="inpKd">Kd</label>
+                <input id="inpKd" type="number" step="any" value="{default_pid_kd}">
+            </div>
+        </div>
+        <button class="pid-apply" onclick="applyPidGains()">Zastosuj PID</button>
+        <div class="hint">Start: Kp≈12, Ki=0, Kd=0 (z symulacji). Stosuj ostrożnie na stole.</div>
+    </div>
 
     <div id="manualPanel" class="panel">
         <div class="slider-container">
@@ -117,20 +153,43 @@ def _balance_html(default_mode):
         const statusDiv = document.getElementById("status");
         const modeLabel = document.getElementById("modeLabel");
         const manualPanel = document.getElementById("manualPanel");
+        const pidPanel = document.getElementById("pidPanel");
         const btnAi = document.getElementById("btnAi");
+        const btnPid = document.getElementById("btnPid");
         const btnManual = document.getElementById("btnManual");
         const slider = document.getElementById("slider");
         const value = document.getElementById("value");
+        const inpKp = document.getElementById("inpKp");
+        const inpKi = document.getElementById("inpKi");
+        const inpKd = document.getElementById("inpKd");
 
         const ws = new WebSocket(`ws://${{window.location.hostname}}:8000/ws`);
 
         function renderMode() {{
             btnAi.classList.toggle("active", currentMode === "ai");
+            btnPid.classList.toggle("active", currentMode === "pid");
             btnManual.classList.toggle("active", currentMode === "manual");
+            pidPanel.classList.toggle("enabled", currentMode === "pid");
             manualPanel.classList.toggle("enabled", currentMode === "manual");
-            modeLabel.innerText = currentMode === "ai"
-                ? "Tryb: AI (balans automatyczny)"
-                : "Tryb: Manual (suwak)";
+            if (currentMode === "ai") {{
+                modeLabel.innerText = "Tryb: AI (balans automatyczny)";
+            }} else if (currentMode === "pid") {{
+                modeLabel.innerText = "Tryb: PID (regulator klasyczny)";
+            }} else {{
+                modeLabel.innerText = "Tryb: Manual (suwak)";
+            }}
+        }}
+
+        function applyPidGains() {{
+            const payload = {{
+                type: "pid_gains",
+                kp: Number(inpKp.value),
+                ki: Number(inpKi.value),
+                kd: Number(inpKd.value),
+            }};
+            if (ws.readyState === WebSocket.OPEN) {{
+                ws.send(JSON.stringify(payload));
+            }}
         }}
 
         function setMode(mode) {{
@@ -141,6 +200,9 @@ def _balance_html(default_mode):
             }}
             if (mode === "manual") {{
                 stopMotor();
+            }}
+            if (mode === "pid") {{
+                applyPidGains();
             }}
         }}
 
@@ -178,18 +240,25 @@ def _balance_html(default_mode):
 def create_app(
     on_motor_power_change,
     on_mode_change=None,
+    on_pid_gains_change=None,
     default_mode="manual",
+    default_pid_kp=12.0,
+    default_pid_ki=0.0,
+    default_pid_kd=0.0,
     on_disconnect=None,
 ):
     """
     on_motor_power_change(value): suwak manual (-1..1).
-    on_mode_change(mode): opcjonalnie "ai" | "manual" — włącza UI z przełącznikiem trybów.
+    on_mode_change(mode): opcjonalnie "ai" | "pid" | "manual".
+    on_pid_gains_change(kp, ki, kd): aktualizacja gainów PID z UI.
     """
     app = FastAPI()
     balance_ui = on_mode_change is not None
 
     if balance_ui:
-        html = _balance_html(default_mode)
+        html = _balance_html(
+            default_mode, default_pid_kp, default_pid_ki, default_pid_kd
+        )
     else:
         html = _manual_only_html()
 
@@ -214,11 +283,22 @@ def create_app(
 
                 elif data.get("type") == "set_mode" and balance_ui:
                     mode = str(data.get("mode", "ai")).lower()
-                    if mode in ("ai", "manual"):
+                    if mode in ("ai", "pid", "manual"):
                         print(f"Mode -> {mode}")
                         on_mode_change(mode)
-                        if mode == "ai":
+                        if mode != "manual":
                             on_motor_power_change(0.0)
+
+                elif (
+                    data.get("type") == "pid_gains"
+                    and balance_ui
+                    and on_pid_gains_change is not None
+                ):
+                    on_pid_gains_change(
+                        kp=data.get("kp"),
+                        ki=data.get("ki"),
+                        kd=data.get("kd"),
+                    )
 
         except WebSocketDisconnect:
             print("WebSocket disconnected")

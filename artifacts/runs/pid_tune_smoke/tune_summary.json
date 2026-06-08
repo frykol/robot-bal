@@ -1,0 +1,115 @@
+{
+  "best": {
+    "kd": 0.0,
+    "ki": 0.0,
+    "kp": 40.0,
+    "mean_reward": 2833.319801590528,
+    "mean_steps": 2897.6,
+    "std_reward": 734.9410121770768,
+    "std_steps": 637.3719793025106,
+    "survival_rate": 0.0
+  },
+  "ranking_metric": "mean_steps, then mean_reward, then survival_rate",
+  "top_n": [
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 40.0,
+      "mean_reward": 2833.319801590528,
+      "mean_steps": 2897.6,
+      "std_reward": 734.9410121770768,
+      "std_steps": 637.3719793025106,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 1.0,
+      "kp": 40.0,
+      "mean_reward": 2459.2349758967775,
+      "mean_steps": 2552.2,
+      "std_reward": 379.1439462039772,
+      "std_steps": 331.8194689887861,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 50.0,
+      "mean_reward": 1922.722421634792,
+      "mean_steps": 2044.8,
+      "std_reward": 440.5683496075426,
+      "std_steps": 373.6610228536019,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 60.0,
+      "mean_reward": 1741.6815446352095,
+      "mean_steps": 1859.8,
+      "std_reward": 620.8024557549044,
+      "std_steps": 515.3978657309322,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 1.0,
+      "kp": 50.0,
+      "mean_reward": 1627.5515157276345,
+      "mean_steps": 1805.2,
+      "std_reward": 282.4475238745673,
+      "std_steps": 245.78559762524736,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 1.0,
+      "kp": 60.0,
+      "mean_reward": 1465.928792871853,
+      "mean_steps": 1621.4,
+      "std_reward": 316.8001094295575,
+      "std_steps": 279.987571152721,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 2.0,
+      "ki": 1.0,
+      "kp": 50.0,
+      "mean_reward": -15.054912711567095,
+      "mean_steps": 96.8,
+      "std_reward": 32.82343546348045,
+      "std_steps": 41.40241538847703,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 2.0,
+      "ki": 1.0,
+      "kp": 60.0,
+      "mean_reward": -33.40011904214698,
+      "mean_steps": 78.2,
+      "std_reward": 21.446911917181556,
+      "std_steps": 22.480213522117623,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 2.0,
+      "ki": 0.0,
+      "kp": 50.0,
+      "mean_reward": -28.48473709315366,
+      "mean_steps": 76.8,
+      "std_reward": 28.35290311154517,
+      "std_steps": 28.294169010592977,
+      "survival_rate": 0.0
+    },
+    {
+      "kd": 2.0,
+      "ki": 0.0,
+      "kp": 40.0,
+      "mean_reward": -37.42631629759813,
+      "mean_steps": 65.2,
+      "std_reward": 12.149151531020378,
+      "std_steps": 11.906300852909775,
+      "survival_rate": 0.0
+    }
+  ]
+}

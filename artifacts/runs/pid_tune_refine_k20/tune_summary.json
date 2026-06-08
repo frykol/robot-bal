@@ -1,0 +1,115 @@
+{
+  "best": {
+    "kd": 0.0,
+    "ki": 0.0,
+    "kp": 12.0,
+    "mean_reward": 5862.66699187885,
+    "mean_steps": 5000.0,
+    "std_reward": 108.36405605878288,
+    "std_steps": 0.0,
+    "survival_rate": 1.0
+  },
+  "ranking_metric": "mean_steps, then mean_reward, then survival_rate",
+  "top_n": [
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 12.0,
+      "mean_reward": 5862.66699187885,
+      "mean_steps": 5000.0,
+      "std_reward": 108.36405605878288,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 15.0,
+      "mean_reward": 5808.3211397504965,
+      "mean_steps": 5000.0,
+      "std_reward": 115.23474151993084,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.25,
+      "kp": 15.0,
+      "mean_reward": 5773.898613065083,
+      "mean_steps": 5000.0,
+      "std_reward": 147.75837813362796,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.5,
+      "kp": 15.0,
+      "mean_reward": 5761.869240885638,
+      "mean_steps": 5000.0,
+      "std_reward": 151.66630064938187,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 18.0,
+      "mean_reward": 5686.748190037263,
+      "mean_steps": 5000.0,
+      "std_reward": 190.47491212114704,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.75,
+      "kp": 18.0,
+      "mean_reward": 5678.587802466549,
+      "mean_steps": 5000.0,
+      "std_reward": 234.626009550528,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.5,
+      "kp": 18.0,
+      "mean_reward": 5669.550007346432,
+      "mean_steps": 5000.0,
+      "std_reward": 201.147066671437,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.25,
+      "kp": 18.0,
+      "mean_reward": 5665.193653872088,
+      "mean_steps": 5000.0,
+      "std_reward": 171.3934747126935,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.75,
+      "kp": 15.0,
+      "mean_reward": 5644.889015745991,
+      "mean_steps": 5000.0,
+      "std_reward": 198.3784588022751,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    },
+    {
+      "kd": 0.0,
+      "ki": 0.0,
+      "kp": 20.0,
+      "mean_reward": 5616.380130175157,
+      "mean_steps": 5000.0,
+      "std_reward": 203.12388082662375,
+      "std_steps": 0.0,
+      "survival_rate": 1.0
+    }
+  ]
+}

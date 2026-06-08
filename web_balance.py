@@ -1,8 +1,9 @@
 """
-Web UI: domyślnie balans AI; przełącznik Manual / AI na stronie.
+Web UI: balans AI, regulator PID lub manual na stronie.
 
 Uruchomienie na Raspberry Pi:
   python web_balance.py --actor-path artifacts/runs/dual_h32_16_v6/actor_best.pt --profile safe
+  python web_balance.py --default-mode pid --pid-kp 12 --pid-ki 0 --pid-kd 0 --profile safe
 """
 
 import argparse
@@ -20,22 +21,37 @@ from rl.imu_obs import (
     features_from_obs,
     obs_dim_for_mode,
 )
+from rl.pid import BalancePIDController
 from rl.pi_runtime import RaspberryBalanceRuntime
 from rl.sac import SACAgent, infer_dims_from_actor_file
 from web.web_server import create_app
+
+DEFAULT_PID_KP = 12.0
+DEFAULT_PID_KI = 0.0
+DEFAULT_PID_KD = 0.0
+DEFAULT_PID_FORCE_MAX_N = 10.0
 
 
 class BalanceControl:
     """Współdzielony stan między wątkiem robota a WebSocket."""
 
-    MODES = ("ai", "manual")
+    MODES = ("ai", "pid", "manual")
 
-    def __init__(self, default_mode="ai"):
+    def __init__(
+        self,
+        default_mode="ai",
+        pid_kp=DEFAULT_PID_KP,
+        pid_ki=DEFAULT_PID_KI,
+        pid_kd=DEFAULT_PID_KD,
+    ):
         if default_mode not in self.MODES:
             raise ValueError(f"default_mode must be one of {self.MODES}")
         self._lock = threading.Lock()
         self._mode = default_mode
         self._manual_power = 0.0
+        self._pid_kp = float(pid_kp)
+        self._pid_ki = float(pid_ki)
+        self._pid_kd = float(pid_kd)
 
     def set_mode(self, mode):
         mode = str(mode).lower()
@@ -43,7 +59,7 @@ class BalanceControl:
             raise ValueError(f"Unknown mode: {mode}")
         with self._lock:
             self._mode = mode
-            if mode == "ai":
+            if mode != "manual":
                 self._manual_power = 0.0
         print(f"Control mode -> {mode}")
 
@@ -55,9 +71,26 @@ class BalanceControl:
             self._manual_power = value
         print(f"Manual power -> {value:.2f}")
 
+    def set_pid_gains(self, kp=None, ki=None, kd=None):
+        with self._lock:
+            if kp is not None:
+                self._pid_kp = float(kp)
+            if ki is not None:
+                self._pid_ki = float(ki)
+            if kd is not None:
+                self._pid_kd = float(kd)
+            kp, ki, kd = self._pid_kp, self._pid_ki, self._pid_kd
+        print(f"PID gains -> Kp={kp:g} Ki={ki:g} Kd={kd:g}")
+
     def snapshot(self):
         with self._lock:
-            return self._mode, self._manual_power
+            return {
+                "mode": self._mode,
+                "manual_power": self._manual_power,
+                "pid_kp": self._pid_kp,
+                "pid_ki": self._pid_ki,
+                "pid_kd": self._pid_kd,
+            }
 
     def stop_manual(self):
         with self._lock:
@@ -82,21 +115,50 @@ def _apply_manual_drive(env, power, motor_scale):
         env.drive.stop()
 
 
-def robot_loop(env, agent, control, obs_mode, calibration, tilt_limit_rad, deterministic):
+def robot_loop(
+    env,
+    agent,
+    control,
+    obs_mode,
+    calibration,
+    tilt_limit_rad,
+    deterministic,
+    pid_force_max_n,
+    pid_dt,
+):
     obs = env.reset()
     last_mode = None
+    pid = BalancePIDController(
+        kp=DEFAULT_PID_KP,
+        ki=DEFAULT_PID_KI,
+        kd=DEFAULT_PID_KD,
+        dt=pid_dt,
+        obs_mode=obs_mode,
+    )
+    last_pid_gains = None
 
     try:
         while True:
-            mode, manual_power = control.snapshot()
+            snap = control.snapshot()
+            mode = snap["mode"]
+            manual_power = snap["manual_power"]
+            pid_gains = (snap["pid_kp"], snap["pid_ki"], snap["pid_kd"])
 
             if mode != last_mode:
                 env.drive.stop()
-                if mode == "ai":
+                if mode in ("ai", "pid"):
                     obs = env._get_obs()
+                if mode == "pid":
+                    pid.reset()
                 else:
                     control.stop_manual()
                 last_mode = mode
+                last_pid_gains = None
+
+            if pid_gains != last_pid_gains:
+                pid.kp, pid.ki, pid.kd = pid_gains
+                pid.reset()
+                last_pid_gains = pid_gains
 
             if mode == "ai":
                 action = agent.act(obs, deterministic=deterministic)
@@ -106,6 +168,22 @@ def robot_loop(env, agent, control, obs_mode, calibration, tilt_limit_rad, deter
                     print("Safety stop: tilt threshold exceeded.")
                     env.drive.stop()
                     obs = env.reset()
+            elif mode == "pid":
+                action = pid.act(obs, pid_force_max_n)
+                obs, _, done = env.step(action)
+                pitch, pitch_rate, x_m, x_dot = features_from_obs(
+                    obs, obs_mode, calibration=calibration
+                )
+                if done or abs(pitch) > tilt_limit_rad:
+                    print("PID safety stop: tilt threshold exceeded.")
+                    env.drive.stop()
+                    obs = env.reset()
+                    pid.reset()
+                else:
+                    print(
+                        f"PID Kp={pid.kp:g} Ki={pid.ki:g} Kd={pid.kd:g} | "
+                        f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | x:{x_m:.3f}"
+                    )
             else:
                 _apply_manual_drive(env, manual_power, env.motor_scale)
                 time.sleep(env.loop_dt)
@@ -151,9 +229,18 @@ def main():
     parser.add_argument("--imu-bus-ids", type=int, nargs=2, default=[1, 3])
     parser.add_argument(
         "--default-mode",
-        choices=["ai", "manual"],
+        choices=["ai", "pid", "manual"],
         default="ai",
         help="Tryb startowy (domyślnie AI balansuje).",
+    )
+    parser.add_argument("--pid-kp", type=float, default=DEFAULT_PID_KP)
+    parser.add_argument("--pid-ki", type=float, default=DEFAULT_PID_KI)
+    parser.add_argument("--pid-kd", type=float, default=DEFAULT_PID_KD)
+    parser.add_argument(
+        "--pid-force-max-n",
+        type=float,
+        default=DEFAULT_PID_FORCE_MAX_N,
+        help="Skala siły w PID (jak force_max w symulacji).",
     )
     args = parser.parse_args()
 
@@ -191,13 +278,20 @@ def main():
     )
     agent.load_actor(str(args.actor_path))
 
-    control = BalanceControl(default_mode=args.default_mode)
+    control = BalanceControl(
+        default_mode=args.default_mode,
+        pid_kp=args.pid_kp,
+        pid_ki=args.pid_ki,
+        pid_kd=args.pid_kd,
+    )
     tilt_limit_rad = args.tilt_limit_deg * 3.141592653589793 / 180.0
+    pid_dt = 1.0 / float(args.loop_hz)
 
     print(
         f"web_balance | obs_mode={args.obs_mode} | action={action_layout} | "
         f"hidden_dims={hidden_dims} | motor_scale={env.motor_scale:.2f} | "
-        f"default_mode={args.default_mode}"
+        f"default_mode={args.default_mode} | "
+        f"pid Kp={args.pid_kp:g} Ki={args.pid_ki:g} Kd={args.pid_kd:g}"
     )
 
     robot_thread = threading.Thread(
@@ -210,6 +304,8 @@ def main():
             calibration,
             tilt_limit_rad,
             not args.stochastic,
+            args.pid_force_max_n,
+            pid_dt,
         ),
         daemon=True,
     )
@@ -222,7 +318,11 @@ def main():
     app = create_app(
         on_motor_power_change=control.set_manual_power,
         on_mode_change=control.set_mode,
+        on_pid_gains_change=control.set_pid_gains,
         default_mode=args.default_mode,
+        default_pid_kp=args.pid_kp,
+        default_pid_ki=args.pid_ki,
+        default_pid_kd=args.pid_kd,
         on_disconnect=on_disconnect,
     )
 
