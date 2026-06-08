@@ -17,6 +17,10 @@ from rl.envs import InvertedPendulumEnv
 from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     obs_dim_for_mode,
@@ -101,8 +105,13 @@ def save_run_config(run_dir, config):
 def _print_physics_summary(physics):
     layout = physics.layout
     print("Physics (cart-pole):")
-    print(f"  m (axle)     = {physics.m_axle_kg:.3f} kg")
+    print(f"  m (axle)     = {physics.m_axle_kg:.3f} kg  (motors @ z=0)")
     print(f"  M (body)     = {physics.M_body_kg:.3f} kg")
+    if layout.get("battery_z_m") is not None:
+        print(
+            f"  stack z [m]  battery={layout['battery_z_m']:.3f}  "
+            f"case={layout['case_z_m']:.3f}  rpi={layout['rpi_z_m']:.3f}"
+        )
     print(f"  l (body COM) = {physics.l_body_m:.4f} m")
     print(f"  z_COM total  = {physics.z_com_full_m:.4f} m (from axle)")
     print(f"  F_max        = {physics.force_max_n:.2f} N", end="")
@@ -446,10 +455,18 @@ def parse_args():
     )
     parser.add_argument(
         "--obs-mode",
-        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        choices=[
+            OBS_MODE_PROCESSED4,
+            OBS_MODE_IMU_RAW6,
+            OBS_MODE_IMU_RAW12,
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
         default=OBS_MODE_PROCESSED4,
         help=(
-            "processed4 | imu_raw6 | imu_raw12 — w simie zawsze syntetyczne LSB "
+            "processed4 | imu_raw6 | imu_raw12 | imu_raw6_enc1 | imu_raw12_enc1 — w simie zawsze syntetyczne LSB "
             "(nie prawdziwy I2C; na Pi użyj run_policy_pi / online_train_pi)."
         ),
     )

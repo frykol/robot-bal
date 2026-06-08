@@ -1,5 +1,6 @@
 """Raspberry Pi deployment runtime (real I2C IMU + motors). Not used by train_sim."""
 
+import copy
 import time
 
 import numpy as np
@@ -9,6 +10,10 @@ from rl.envs_dual import parse_dual_action
 from rl.imu_obs import (
     DEFAULT_IMU_BUS_IDS,
     OBS_MODE_IMU_RAW12,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     load_imu_calibration,
@@ -28,6 +33,8 @@ class RaspberryBalanceRuntime:
         self,
         bus_id=1,
         imu_bus_ids=None,
+        imu_primary_bus_id=1,
+        dual_physical_imu=False,
         motor_scale=0.8,
         loop_hz=100,
         pitch_alpha=0.98,
@@ -47,13 +54,19 @@ class RaspberryBalanceRuntime:
         if gyro_lsb_per_dps is None:
             gyro_lsb_per_dps = GYR_LSB_PER_DPS
 
+        self.obs_mode = str(obs_mode)
+        use_dual = bool(dual_physical_imu) and self.obs_mode == OBS_MODE_IMU_RAW12
         if imu_bus_ids is None:
-            if obs_mode == OBS_MODE_IMU_RAW12:
-                imu_bus_ids = DEFAULT_IMU_BUS_IDS
-            else:
-                imu_bus_ids = (int(bus_id),)
-        self.imu_bus_ids = tuple(int(b) for b in imu_bus_ids)
-        self.imus = [BMI160(bus_id=b) for b in self.imu_bus_ids]
+            imu_bus_ids = DEFAULT_IMU_BUS_IDS if use_dual else (int(imu_primary_bus_id),)
+        if use_dual:
+            self.imu_bus_ids = tuple(int(b) for b in imu_bus_ids)[:2]
+            self.imus = [BMI160(bus_id=b) for b in self.imu_bus_ids]
+            self.duplicate_imu12_obs = False
+        else:
+            primary = int(imu_bus_ids[0] if imu_bus_ids else imu_primary_bus_id)
+            self.imu_bus_ids = (primary,)
+            self.imus = [BMI160(bus_id=primary)]
+            self.duplicate_imu12_obs = self.obs_mode == OBS_MODE_IMU_RAW12
         self.imu = self.imus[0]
         self.drive = DriveModule()
         self.motor_scale = float(motor_scale)
@@ -68,7 +81,8 @@ class RaspberryBalanceRuntime:
                 "accel_pitch_bias_rad": accel_pitch_bias_rad,
             }
         self.imu_calibration = cal
-        self.imu_sensor_biases = load_imu_calibration(cal, n_imus=max(2, len(self.imus)))
+        n_imu_cal = 2 if self.obs_mode == OBS_MODE_IMU_RAW12 else max(1, len(self.imus))
+        self.imu_sensor_biases = load_imu_calibration(cal, n_imus=n_imu_cal)
         self.gyro_bias_dps = self.imu_sensor_biases[0]["gyro_bias_dps"]
         self.accel_pitch_bias_rad = self.imu_sensor_biases[0]["accel_pitch_bias_rad"]
         self.fall_angle_rad = np.radians(float(fall_angle_deg))
@@ -78,28 +92,155 @@ class RaspberryBalanceRuntime:
         self.x_est = 0.0
         self.x_dot_est = 0.0
         self._last_t = time.time()
+        self._last_enc_t = self._last_t
+        self._last_enc_x = 0.0
 
-        self.obs_mode = str(obs_mode)
         self.obs_dim = obs_dim_for_mode(self.obs_mode)
         self.action_layout = str(action_layout)
         if self.action_layout not in ("scalar", "dual"):
             raise ValueError("action_layout must be 'scalar' or 'dual'")
         self.min_motor_power = float(min_motor_power)
         self.act_dim = 2 if self.action_layout == "dual" else 1
+        self._last_sensor_snapshot = None
+        # For dual physical IMU (imu_raw12): optional axis sign correction on IMU1
+        # to bring both sensors into the same body frame before averaging / logging.
+        self._imu1_axis_sign = None  # np.array([sx, sy, sz], dtype=float32)
+
+        if use_dual:
+            # Infer whether the second IMU is mounted flipped (common 180° rotations).
+            self._imu1_axis_sign = self._infer_imu1_axis_sign(samples=12)
 
     def _read_imu_raw_one(self, imu):
         ax, ay, az = imu.read_acc()
         gx, gy, gz = imu.read_gyro()
         return np.array([ax, ay, az, gx, gy, gz], dtype=np.float32)
 
+    def _infer_imu1_axis_sign(self, samples=12):
+        """
+        Determine a per-axis sign vector (+1/-1) for IMU1 so its accelerometer reading
+        aligns with IMU0 at rest. We only consider 180° rotations (sign flips).
+        """
+        if len(self.imus) < 2:
+            return np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+        acc0 = []
+        acc1 = []
+        for _ in range(int(samples)):
+            a0 = self.imus[0].read_acc()
+            a1 = self.imus[1].read_acc()
+            acc0.append(np.asarray(a0, dtype=np.float32))
+            acc1.append(np.asarray(a1, dtype=np.float32))
+            time.sleep(0.005)
+
+        v0 = np.mean(acc0, axis=0)
+        v1 = np.mean(acc1, axis=0)
+
+        # Candidate sign flips (identity + common 180° flips).
+        candidates = [
+            np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 1.0, 1.0], dtype=np.float32),
+            np.array([1.0, -1.0, 1.0], dtype=np.float32),
+            np.array([1.0, 1.0, -1.0], dtype=np.float32),
+            np.array([-1.0, -1.0, 1.0], dtype=np.float32),
+            np.array([-1.0, 1.0, -1.0], dtype=np.float32),
+            np.array([1.0, -1.0, -1.0], dtype=np.float32),
+            np.array([-1.0, -1.0, -1.0], dtype=np.float32),
+        ]
+
+        best = candidates[0]
+        best_score = -1e30
+        for s in candidates:
+            score = float(np.dot(v0, v1 * s))
+            if score > best_score:
+                best_score = score
+                best = s
+        return best
+
+    def _apply_imu1_axis_sign(self, chunk, idx):
+        """
+        Apply axis sign correction to IMU idx==1 (both acc and gyro).
+        chunk: np.array([ax, ay, az, gx, gy, gz], float32) in raw LSB.
+        """
+        if idx != 1 or self._imu1_axis_sign is None:
+            return chunk
+        s = self._imu1_axis_sign
+        out = chunk.copy()
+        out[0:3] *= s
+        out[3:6] *= s
+        return out
+
+    def _store_sensor_snapshot(self, imus):
+        e1, e2 = self.drive.get_encoder_steps()
+        self._last_sensor_snapshot = {
+            "t": time.time(),
+            "imus": imus,
+            "enc": [int(e1), int(e2)],
+        }
+
+    def _imu_dict_from_device(self, bus_id=None):
+        imu = self.imu
+        bid = int(self.imu_bus_ids[0] if bus_id is None else bus_id)
+        ax, ay, az = imu.read_acc()
+        gx, gy, gz = imu.read_gyro()
+        return {
+            "bus_id": bid,
+            "acc": [int(ax), int(ay), int(az)],
+            "gyro": [int(gx), int(gy), int(gz)],
+        }
+
+    def _snapshot_imu_list(self):
+        if self.duplicate_imu12_obs:
+            one = self._imu_dict_from_device()
+            return [one, copy.deepcopy(one)]
+        return [self._imu_dict_from_device(b) for b in self.imu_bus_ids]
+
+    def read_sensor_snapshot(self):
+        """Raw BMI160 LSB + encoder counts (extra I2C read — avoid in hot loop)."""
+        imus = self._snapshot_imu_list()
+        self._store_sensor_snapshot(imus)
+        return dict(self._last_sensor_snapshot)
+
+    def peek_sensor_snapshot(self):
+        """Ostatni odczyt z pętli sterowania + świeże enkodery (bez ponownego I2C IMU)."""
+        if self._last_sensor_snapshot is None:
+            return self.read_sensor_snapshot()
+        e1, e2 = self.drive.get_encoder_steps()
+        snap = {
+            "t": time.time(),
+            "imus": self._last_sensor_snapshot["imus"],
+            "enc": [int(e1), int(e2)],
+        }
+        return snap
+
     def _read_imu_raw(self):
-        if self.obs_mode == OBS_MODE_IMU_RAW12:
-            parts = [self._read_imu_raw_one(imu) for imu in self.imus[:2]]
-            if len(parts) == 1:
-                parts.append(parts[0].copy())
-            raw = np.concatenate(parts[:2]).astype(np.float32)
-        else:
-            raw = self._read_imu_raw_one(self.imu)
+        if self.duplicate_imu12_obs:
+            chunk = self._read_imu_raw_one(self.imu)
+            one = self._imu_dict_from_device()
+            imus = [one, copy.deepcopy(one)]
+            self._store_sensor_snapshot(imus)
+            raw = np.concatenate([chunk, chunk]).astype(np.float32)
+            return normalize_raw_imu_obs(raw)
+
+        imus = []
+        parts = []
+        for idx, (bus_id, imu) in enumerate(zip(self.imu_bus_ids, self.imus[:2])):
+            chunk = self._read_imu_raw_one(imu)
+            chunk = self._apply_imu1_axis_sign(chunk, idx)
+            parts.append(chunk)
+            ax, ay, az = int(chunk[0]), int(chunk[1]), int(chunk[2])
+            gx, gy, gz = int(chunk[3]), int(chunk[4]), int(chunk[5])
+            imus.append(
+                {
+                    "bus_id": int(bus_id),
+                    "acc": [ax, ay, az],
+                    "gyro": [gx, gy, gz],
+                }
+            )
+        if len(parts) == 1:
+            parts.append(parts[0].copy())
+            imus.append(dict(imus[0]))
+        self._store_sensor_snapshot(imus[:2])
+        raw = np.concatenate(parts[:2]).astype(np.float32)
         return normalize_raw_imu_obs(raw)
 
     def _pitch_rad_for_done(self, obs):
@@ -127,13 +268,40 @@ class RaspberryBalanceRuntime:
         self.x_est = 0.0
         self.x_dot_est = 0.0
         self._last_t = time.time()
+        self._last_enc_t = self._last_t
+        self._last_enc_x = 0.0
         self.pitch = self._read_pitch_from_acc()
         self.pitch_rate = self._read_pitch_rate_rad()
         return self._get_obs()
 
+    def _read_encoder_x(self):
+        e1, e2 = self.drive.get_encoder_steps()
+        steps_avg = 0.5 * (e1 + e2)
+        return float(steps_avg * self.encoder_step_to_m)
+
+    def _update_encoder_estimates(self):
+        now = time.time()
+        dt = max(1e-4, now - self._last_enc_t)
+        x = self._read_encoder_x()
+        self.x_dot_est = float((x - self._last_enc_x) / dt)
+        self.x_est = float(x)
+        self._last_enc_t = now
+        self._last_enc_x = x
+
     def _get_obs(self):
         if is_raw_imu_mode(self.obs_mode):
-            return self._read_imu_raw()
+            raw = self._read_imu_raw()
+            if self.obs_mode in (OBS_MODE_IMU_RAW6_ENC1, OBS_MODE_IMU_RAW12_ENC1):
+                self._update_encoder_estimates()
+                raw = np.concatenate([raw, np.array([self.x_est], dtype=np.float32)]).astype(
+                    np.float32
+                )
+            elif self.obs_mode in (OBS_MODE_IMU_RAW6_ENC2, OBS_MODE_IMU_RAW12_ENC2):
+                self._update_encoder_estimates()
+                raw = np.concatenate(
+                    [raw, np.array([self.x_est, self.x_dot_est], dtype=np.float32)]
+                ).astype(np.float32)
+            return raw
 
         now = time.time()
         dt = max(1e-4, now - self._last_t)
@@ -150,6 +318,8 @@ class RaspberryBalanceRuntime:
         meters = steps_avg * self.encoder_step_to_m
         self.x_dot_est = (meters - self.x_est) / dt
         self.x_est = meters
+
+        self._store_sensor_snapshot(self._snapshot_imu_list())
 
         return np.array(
             [self.pitch, self.pitch_rate, self.x_est, self.x_dot_est], dtype=np.float32
@@ -188,8 +358,12 @@ class RaspberryBalanceRuntime:
             gyro_dps = []
             accel_pitch = []
             for _ in range(samples):
-                gx, _, _ = imu.read_gyro()
-                ax, _, az = imu.read_acc()
+                # Use the same axis correction as in obs (important for dual IMU average).
+                chunk = self._read_imu_raw_one(imu)
+                chunk = self._apply_imu1_axis_sign(chunk, idx)
+                gx = float(chunk[3])
+                ax = float(chunk[0])
+                az = float(chunk[2])
                 gyro_dps.append(gx / self.gyro_lsb_per_dps)
                 accel_pitch.append(_accel_pitch_raw_rad(ax, az))
                 time.sleep(sample_dt)

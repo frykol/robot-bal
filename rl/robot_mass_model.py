@@ -1,17 +1,19 @@
 """
-Mass layout for the balancing robot (motors at the bottom of the body box).
+Mass layout for the balancing robot.
 
-Components (user-provided):
-  - 2 x motor 160 g at wheel axle (low)
-  - Raspberry Pi 55 g
-  - case 466 g
-  - battery 250 g
+Physical stack (axle z=0 upward):
+  1. Motors at the wheel axle (modeled as m at z=0)
+  2. Battery (low in the body)
+  3. Case / chassis shell (466 g — keep COM low, around the battery bay)
+  4. Raspberry Pi on top of the battery
 
 The cart-pole model uses:
   m  — mass at the axle (motors + wheels),
-  M  — upper body mass (Pi + case + battery),
+  M  — upper body mass (battery + case + Pi),
   l  — height of the body COM above the axle (meters),
   F_max — horizontal drive limit from motor torque at the wheel.
+
+Override heights with --battery-z-m, --case-z-m, --rpi-z-m (meters from axle).
 """
 
 from __future__ import annotations
@@ -49,9 +51,10 @@ class DynamicsParams:
 
 def _z_positions(layout: RobotMassLayout) -> tuple[float, float, float]:
     h = layout.body_height_m
-    z_battery = layout.battery_z_m if layout.battery_z_m is not None else 0.30 * h
-    z_case = layout.case_z_m if layout.case_z_m is not None else 0.50 * h
-    z_rpi = layout.rpi_z_m if layout.rpi_z_m is not None else 0.72 * h
+    # Fractions of body_height_m: battery low, case shell mid-low, Pi highest.
+    z_battery = layout.battery_z_m if layout.battery_z_m is not None else 0.22 * h
+    z_case = layout.case_z_m if layout.case_z_m is not None else 0.32 * h
+    z_rpi = layout.rpi_z_m if layout.rpi_z_m is not None else 0.58 * h
     return z_battery, z_case, z_rpi
 
 

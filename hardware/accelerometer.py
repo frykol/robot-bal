@@ -10,12 +10,20 @@ CHIP_ID_EXPECTED = 0xD1
 REG_CMD = 0x7E
 REG_ACC_X_L = 0x12
 REG_GYR_X_L = 0x0C
+REG_ACC_CONF = 0x40
+REG_GYR_CONF = 0x42
 REG_GYR_RANGE = 0x43
 
 # ±250 °/s — matches Bosch sensitivity used in runtime (see rl.imu_obs.GYR_LSB_PER_DPS).
 from rl.imu_obs import GYR_LSB_PER_DPS
 
 GYR_RANGE_250DPS = 0x03
+ODR_200HZ = 0x09
+
+# BMI160 bandwidth/oversampling: keep defaults simple; normal mode (equidistant sampling).
+# For ACC_CONF: acc_bwp uses bits [6:4], for GYR_CONF: gyr_bwp uses bits [5:4].
+ACC_BWP_NORMAL = 0x02  # normal mode
+GYR_BWP_NORMAL = 0x02  # normal mode
 
 
 def twos_complement(low, high):
@@ -39,6 +47,15 @@ class BMI160:
         time.sleep(0.05)
         self.bus.write_byte_data(self.addr, REG_CMD, 0x15)
         time.sleep(0.05)
+
+        # Configure output data rate (ODR) to 200 Hz for both accel and gyro.
+        # ACC_CONF: [3:0]=odr, [6:4]=bwp, [7]=undersampling
+        acc_conf = (ODR_200HZ & 0x0F) | ((ACC_BWP_NORMAL & 0x07) << 4)
+        # GYR_CONF: [3:0]=odr, [5:4]=bwp
+        gyr_conf = (ODR_200HZ & 0x0F) | ((GYR_BWP_NORMAL & 0x03) << 4)
+        self.bus.write_byte_data(self.addr, REG_ACC_CONF, acc_conf)
+        self.bus.write_byte_data(self.addr, REG_GYR_CONF, gyr_conf)
+        time.sleep(0.01)
 
         self.bus.write_byte_data(self.addr, REG_GYR_RANGE, GYR_RANGE_250DPS)
         time.sleep(0.01)

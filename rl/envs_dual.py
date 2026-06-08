@@ -70,6 +70,7 @@ class DualActionPendulumEnv(InvertedPendulumEnv):
         curriculum_episodes=400,
         alive_reward_per_step=0.02,
         angle_reward_scale=0.03,
+        upright_quad_scale=0.0,
         angular_rate_reward_scale=0.02,
         max_pitch_rate_rad_s=5.0,
         **kwargs,
@@ -83,6 +84,7 @@ class DualActionPendulumEnv(InvertedPendulumEnv):
         self._init_angle_deg = self.init_angle_easy_deg
         self.alive_reward_per_step = float(alive_reward_per_step)
         self.angle_reward_scale = float(angle_reward_scale)
+        self.upright_quad_scale = float(upright_quad_scale)
         self.angular_rate_reward_scale = float(angular_rate_reward_scale)
         self.max_pitch_rate_rad_s = float(max(1e-6, max_pitch_rate_rad_s))
         self._step_count = 0
@@ -102,6 +104,9 @@ class DualActionPendulumEnv(InvertedPendulumEnv):
     def _shaping_reward(self, theta, theta_dot):
         reward = self.alive_reward_per_step
         reward -= self.angle_reward_scale * (abs(theta) / self.theta_max)
+        if self.upright_quad_scale > 0.0:
+            n = abs(theta) / self.theta_max
+            reward -= self.upright_quad_scale * (n * n)
         rate_term = min(1.0, abs(theta_dot) / self.max_pitch_rate_rad_s)
         reward -= self.angular_rate_reward_scale * rate_term
         return float(reward)

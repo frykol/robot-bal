@@ -19,6 +19,10 @@ from rl.envs_dual import DualActionPendulumEnv, FALL_PENALTY_MAX
 from rl.imu_obs import (
     OBS_MODE_IMU_RAW12,
     OBS_MODE_IMU_RAW6,
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
     is_raw_imu_mode,
     obs_dim_for_mode,
@@ -140,6 +144,7 @@ def train(
     curriculum_episodes,
     alive_reward_per_step,
     angle_reward_scale,
+    upright_quad_scale,
     angular_rate_reward_scale,
     action_delay_steps,
     max_force_delta_per_step,
@@ -210,6 +215,7 @@ def train(
         curriculum_episodes=curriculum_episodes,
         alive_reward_per_step=alive_reward_per_step,
         angle_reward_scale=angle_reward_scale,
+        upright_quad_scale=upright_quad_scale,
         angular_rate_reward_scale=angular_rate_reward_scale,
         action_delay_steps=action_delay_steps,
         max_force_delta_per_step=max_force_delta_per_step,
@@ -357,10 +363,19 @@ def parse_args():
     parser.add_argument("--dt", type=float, default=0.002)
     parser.add_argument(
         "--obs-mode",
-        choices=[OBS_MODE_PROCESSED4, OBS_MODE_IMU_RAW6, OBS_MODE_IMU_RAW12],
+        choices=[
+            OBS_MODE_PROCESSED4,
+            OBS_MODE_IMU_RAW6,
+            OBS_MODE_IMU_RAW12,
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ],
         default=OBS_MODE_IMU_RAW12,
         help=(
             "Domyślnie imu_raw12: syntetyczne 2×BMI160 (górna ściana) w rl/imu_obs.py. "
+            "Wariant *_enc1 dokleja x_m (pozycję wózka w m). "
             "processed4 = idealny pitch (bez acc/gyro)."
         ),
     )
@@ -406,6 +421,12 @@ def parse_args():
         type=float,
         default=0.03,
         help="Kara za |theta|/theta_max na żywym kroku (mniejsza = łatwiejszy sygnał).",
+    )
+    parser.add_argument(
+        "--upright-quad-scale",
+        type=float,
+        default=0.0,
+        help="Dodatkowa kara (kwadrat) za odchył: -scale*(|theta|/theta_max)^2.",
     )
     parser.add_argument(
         "--angular-rate-reward-scale",
@@ -560,6 +581,7 @@ if __name__ == "__main__":
                 "reward": "alive_plus_shaping_plus_time_scaled_fall",
                 "alive_reward_per_step": args.alive_reward_per_step,
                 "angle_reward_scale": args.angle_reward_scale,
+                "upright_quad_scale": args.upright_quad_scale,
                 "angular_rate_reward_scale": args.angular_rate_reward_scale,
                 "fall_penalty_max": args.fall_penalty_max,
                 "fall_formula": "-fall_penalty_max * (max_steps - step) / max_steps on fall",
@@ -636,6 +658,7 @@ if __name__ == "__main__":
         args.curriculum_episodes,
         args.alive_reward_per_step,
         args.angle_reward_scale,
+        args.upright_quad_scale,
         args.angular_rate_reward_scale,
         args.action_delay_steps,
         max_force_delta,

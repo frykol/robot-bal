@@ -1,0 +1,20 @@
+{
+  "imu_bus_ids": [
+    1,
+    3
+  ],
+  "imensors": [
+    {
+      "bus_id": 1,
+      "gyro_bias_dps": -0.25321646341463416,
+      "accel_pitch_bias_rad": 0.00911636577367495
+    },
+    {
+      "bus_id": 3,
+      "gyro_bias_dps": -0.2466768292682927,
+      "accel_pitch_bias_rad": 0.025812987645191753
+    }
+  ],
+  "gyro_bias_dps": -0.25321646341463416,
+  "accel_pitch_bias_rad": 0.00911636577367495
+}
