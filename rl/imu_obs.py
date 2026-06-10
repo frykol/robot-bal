@@ -76,8 +76,16 @@ def pitch_rad_from_imu_slice(obs_slice, accel_pitch_bias_rad=0.0):
     return float(np.arctan2(-ax, -az + 1e-6)) - float(accel_pitch_bias_rad)
 
 
+def _gyro_slice_looks_normalized(obs_slice) -> bool:
+    """Pi runtime normalizes gyro to °/s; sim uses raw LSB (hundreds+)."""
+    gx, gy, gz = (abs(float(obs_slice[3])), abs(float(obs_slice[4])), abs(float(obs_slice[5])))
+    return max(gx, gy, gz) < 100.0
+
+
 def pitch_rate_rad_from_imu_slice(obs_slice, gyro_bias_dps=0.0):
     gx = float(obs_slice[3])
+    if _gyro_slice_looks_normalized(obs_slice):
+        return float(np.deg2rad(gx - gyro_bias_dps))
     return gyro_lsb_to_rad_s(gx) - float(np.deg2rad(gyro_bias_dps))
 
 

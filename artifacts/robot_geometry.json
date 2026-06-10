@@ -12,12 +12,17 @@
   "motor_torque_nm": 0.35,
   "n_drive_motors": 2,
   "force_max_n": 10.0,
+  "pitch_inertia_kgm2": 0.01,
+  "auto_apply_pid": true,
+  "kd_to_kp_ratio": 0.007,
   "pid_reference": {
     "com_height_m": 0.063,
+    "pitch_inertia_kgm2": 0.00183,
     "force_max_n": 10.0,
     "kp": 12.0,
     "ki": 0.0,
     "kd": 0.0,
+    "kd_to_kp_ratio": 0.007,
     "kp_x": 0.0,
     "ki_x": 0.0,
     "kd_x": 0.0

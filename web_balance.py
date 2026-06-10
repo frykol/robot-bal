@@ -3,7 +3,7 @@ Web UI: balans AI, regulator PID lub manual na stronie.
 
 Uruchomienie na Raspberry Pi:
   python web_balance.py --actor-path artifacts/runs/dual_h32_16_v6/actor_best.pt --profile safe
-  python web_balance.py --default-mode pid --pid-kp 12 --pid-ki 0 --pid-kd 0 --profile safe
+  python web_balance.py --default-mode pid --geometry-path artifacts/robot_geometry.json --profile safe
 """
 
 import argparse
@@ -185,6 +185,9 @@ def robot_loop(
     telemetry,
     pid_force_max_n,
     pid_dt,
+    pid_kp_init,
+    pid_ki_init,
+    pid_kd_init,
     pid_kp_x=0.0,
     pid_ki_x=0.0,
     pid_kd_x=0.0,
@@ -193,9 +196,9 @@ def robot_loop(
     last_mode = None
     imu_biases = load_imu_calibration(calibration or {}, n_imus=1)[0]
     pid = BalancePIDController(
-        kp=DEFAULT_PID_KP,
-        ki=DEFAULT_PID_KI,
-        kd=DEFAULT_PID_KD,
+        kp=pid_kp_init,
+        ki=pid_ki_init,
+        kd=pid_kd_init,
         kp_x=pid_kp_x,
         ki_x=pid_ki_x,
         kd_x=pid_kd_x,
@@ -470,6 +473,9 @@ def main():
             telemetry,
             pid_force_max_n,
             pid_dt,
+            pid_kp,
+            pid_ki,
+            pid_kd,
             pid_kp_x,
             pid_ki_x,
             pid_kd_x,
