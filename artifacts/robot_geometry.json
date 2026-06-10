@@ -1,0 +1,25 @@
+{
+  "height_reference": "wheel_axle",
+  "ground_clearance_m": 0.0083,
+  "wheel_radius_m": 0.03,
+  "body_height_m": 0.160,
+  "battery_z_m": 0.100,
+  "imu_z_m": 0.175,
+  "motor_mass_g": 160,
+  "battery_mass_g": 250,
+  "case_mass_g": 466,
+  "rpi_mass_g": 55,
+  "motor_torque_nm": 0.35,
+  "n_drive_motors": 2,
+  "force_max_n": 10.0,
+  "pid_reference": {
+    "com_height_m": 0.063,
+    "force_max_n": 10.0,
+    "kp": 12.0,
+    "ki": 0.0,
+    "kd": 0.0,
+    "kp_x": 0.0,
+    "ki_x": 0.0,
+    "kd_x": 0.0
+  }
+}

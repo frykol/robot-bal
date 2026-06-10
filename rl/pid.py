@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 
 from rl.imu_obs import (
+    OBS_MODE_IMU_RAW12_ENC1,
+    OBS_MODE_IMU_RAW12_ENC2,
+    OBS_MODE_IMU_RAW6_ENC1,
+    OBS_MODE_IMU_RAW6_ENC2,
     OBS_MODE_PROCESSED4,
+    RAW_IMU_CHANNELS,
     is_raw_imu_mode,
     pitch_rad_from_raw_obs,
     pitch_rate_rad_from_raw_obs,
@@ -81,7 +86,15 @@ class BalancePIDController:
                 gyro_bias_dps=self.gyro_bias_dps,
                 imu_index=self.imu_index,
             )
-            return theta, theta_dot, 0.0, 0.0
+            x_m, x_dot = 0.0, 0.0
+            if self.obs_mode in (OBS_MODE_IMU_RAW6_ENC1, OBS_MODE_IMU_RAW12_ENC1):
+                base = RAW_IMU_CHANNELS if self.obs_mode == OBS_MODE_IMU_RAW6_ENC1 else 2 * RAW_IMU_CHANNELS
+                x_m = float(obs[base])
+            elif self.obs_mode in (OBS_MODE_IMU_RAW6_ENC2, OBS_MODE_IMU_RAW12_ENC2):
+                base = RAW_IMU_CHANNELS if self.obs_mode == OBS_MODE_IMU_RAW6_ENC2 else 2 * RAW_IMU_CHANNELS
+                x_m = float(obs[base])
+                x_dot = float(obs[base + 1])
+            return theta, theta_dot, x_m, x_dot
 
         raise ValueError(f"Unsupported obs_mode for PID: {self.obs_mode}")
 

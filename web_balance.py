@@ -27,8 +27,15 @@ from rl.imu_obs import (
     features_from_obs,
     obs_dim_for_mode,
 )
+from rl.imu_obs import load_imu_calibration
 from rl.pid import BalancePIDController
 from rl.pi_runtime import RaspberryBalanceRuntime
+from rl.robot_geometry import (
+    DEFAULT_GEOMETRY_PATH,
+    load_robot_geometry,
+    print_geometry_pid_summary,
+    resolve_pid_for_robot,
+)
 from rl.sac import SACAgent, infer_dims_from_actor_file
 from web.web_server import create_app
 
@@ -178,15 +185,24 @@ def robot_loop(
     telemetry,
     pid_force_max_n,
     pid_dt,
+    pid_kp_x=0.0,
+    pid_ki_x=0.0,
+    pid_kd_x=0.0,
 ):
     obs = env.reset()
     last_mode = None
+    imu_biases = load_imu_calibration(calibration or {}, n_imus=1)[0]
     pid = BalancePIDController(
         kp=DEFAULT_PID_KP,
         ki=DEFAULT_PID_KI,
         kd=DEFAULT_PID_KD,
+        kp_x=pid_kp_x,
+        ki_x=pid_ki_x,
+        kd_x=pid_kd_x,
         dt=pid_dt,
         obs_mode=obs_mode,
+        gyro_bias_dps=imu_biases["gyro_bias_dps"],
+        accel_pitch_bias_rad=imu_biases["accel_pitch_bias_rad"],
     )
     last_pid_gains = None
 
@@ -339,11 +355,52 @@ def main():
         default=Path("logs") / "sensor_recordings",
         help="Katalog CSV z nagraniami IMU + enkoderów.",
     )
+    parser.add_argument(
+        "--geometry-path",
+        type=Path,
+        default=DEFAULT_GEOMETRY_PATH,
+        help="JSON z wysokościami/masami robota → skalowanie PID i force_max.",
+    )
+    parser.add_argument(
+        "--no-pid-auto-scale",
+        action="store_true",
+        help="Nie skaluj Kp/Ki/Kd z geometrii (tylko force_max jeśli włączone).",
+    )
+    parser.add_argument(
+        "--no-pid-geometry-force-max",
+        action="store_true",
+        help="Nie nadpisuj --pid-force-max-n z geometrii (moment/koło).",
+    )
     args = parser.parse_args()
 
     calibration = {}
     if args.calibration_path.exists():
         calibration = json.loads(args.calibration_path.read_text(encoding="utf-8"))
+
+    geometry = load_robot_geometry(args.geometry_path)
+    pid_kp_x = pid_ki_x = pid_kd_x = 0.0
+    pid_force_max_n = float(args.pid_force_max_n)
+    pid_kp, pid_ki, pid_kd = float(args.pid_kp), float(args.pid_ki), float(args.pid_kd)
+    if geometry is not None:
+        resolved = resolve_pid_for_robot(
+            geometry,
+            kp=pid_kp,
+            ki=pid_ki,
+            kd=pid_kd,
+            force_max_n=pid_force_max_n,
+            auto_scale=not args.no_pid_auto_scale,
+            use_geometry_force_max=not args.no_pid_geometry_force_max,
+        )
+        pid_kp = resolved["kp"]
+        pid_ki = resolved["ki"]
+        pid_kd = resolved["kd"]
+        pid_kp_x = resolved["kp_x"]
+        pid_ki_x = resolved["ki_x"]
+        pid_kd_x = resolved["kd_x"]
+        pid_force_max_n = resolved["force_max_n"]
+        print_geometry_pid_summary(resolved)
+    else:
+        print(f"Brak geometrii ({args.geometry_path}) — PID bez skalowania.")
 
     ckpt_obs, ckpt_act, hidden_dims = infer_dims_from_actor_file(args.actor_path)
     action_layout = "dual" if ckpt_act == 2 else "scalar"
@@ -379,9 +436,9 @@ def main():
 
     control = BalanceControl(
         default_mode=args.default_mode,
-        pid_kp=args.pid_kp,
-        pid_ki=args.pid_ki,
-        pid_kd=args.pid_kd,
+        pid_kp=pid_kp,
+        pid_ki=pid_ki,
+        pid_kd=pid_kd,
     )
     telemetry = SensorRecorder(logs_dir=args.record_logs_dir)
     tilt_limit_rad = args.tilt_limit_deg * 3.141592653589793 / 180.0
@@ -396,7 +453,8 @@ def main():
         f"web_balance | obs_mode={args.obs_mode} | IMU {imu_note} | "
         f"action={action_layout} | hidden_dims={hidden_dims} | "
         f"motor_scale={env.motor_scale:.2f} | default_mode={args.default_mode} | "
-        f"pid Kp={args.pid_kp:g} Ki={args.pid_ki:g} Kd={args.pid_kd:g}"
+        f"pid Kp={pid_kp:g} Ki={pid_ki:g} Kd={pid_kd:g} "
+        f"force_max={pid_force_max_n:.2f}N"
     )
 
     robot_thread = threading.Thread(
@@ -410,8 +468,11 @@ def main():
             tilt_limit_rad,
             not args.stochastic,
             telemetry,
-            args.pid_force_max_n,
+            pid_force_max_n,
             pid_dt,
+            pid_kp_x,
+            pid_ki_x,
+            pid_kd_x,
         ),
         daemon=True,
     )
@@ -428,9 +489,9 @@ def main():
         on_mode_change=control.set_mode,
         on_pid_gains_change=control.set_pid_gains,
         default_mode=args.default_mode,
-        default_pid_kp=args.pid_kp,
-        default_pid_ki=args.pid_ki,
-        default_pid_kd=args.pid_kd,
+        default_pid_kp=pid_kp,
+        default_pid_ki=pid_ki,
+        default_pid_kd=pid_kd,
         on_disconnect=on_disconnect,
         telemetry_hub=telemetry,
     )
