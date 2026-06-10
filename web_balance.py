@@ -8,8 +8,10 @@ Uruchomienie na Raspberry Pi:
 
 import argparse
 import json
+import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import uvicorn
@@ -190,67 +192,76 @@ def robot_loop(
 
     try:
         while True:
-            snap = control.snapshot()
-            mode = snap["mode"]
-            manual_power = snap["manual_power"]
-            pid_gains = (snap["pid_kp"], snap["pid_ki"], snap["pid_kd"])
+            try:
+                snap = control.snapshot()
+                mode = snap["mode"]
+                manual_power = snap["manual_power"]
+                pid_gains = (snap["pid_kp"], snap["pid_ki"], snap["pid_kd"])
 
-            if mode != last_mode:
-                env.drive.stop()
-                if mode in ("ai", "pid"):
-                    obs = env._get_obs()
-                if mode == "pid":
-                    pid.reset()
-                else:
-                    control.stop_manual()
-                last_mode = mode
-                last_pid_gains = None
-
-            if pid_gains != last_pid_gains:
-                pid.kp, pid.ki, pid.kd = pid_gains
-                pid.reset()
-                last_pid_gains = pid_gains
-
-            if mode == "ai":
-                action = agent.act(obs, deterministic=deterministic)
-                obs, _, done = env.step(action)
-                _offer_sensor_sample(telemetry, env)
-                pitch, _, _, _ = features_from_obs(obs, obs_mode, calibration=calibration)
-                if done or abs(pitch) > tilt_limit_rad:
-                    print("Safety stop: tilt threshold exceeded.")
+                if mode != last_mode:
                     env.drive.stop()
-                    obs = env.reset()
-            elif mode == "pid":
-                action = pid.act(obs, pid_force_max_n)
-                obs, _, done = env.step(action)
-                _offer_sensor_sample(telemetry, env)
-                pitch, pitch_rate, x_m, x_dot = features_from_obs(
-                    obs, obs_mode, calibration=calibration
-                )
-                if done or abs(pitch) > tilt_limit_rad:
-                    print("PID safety stop: tilt threshold exceeded.")
-                    env.drive.stop()
-                    obs = env.reset()
+                    if mode in ("ai", "pid"):
+                        obs = env._get_obs()
+                    if mode == "pid":
+                        pid.reset()
+                    else:
+                        control.stop_manual()
+                    last_mode = mode
+                    last_pid_gains = None
+
+                if pid_gains != last_pid_gains:
+                    pid.kp, pid.ki, pid.kd = pid_gains
                     pid.reset()
-                else:
-                    print(
-                        f"PID Kp={pid.kp:g} Ki={pid.ki:g} Kd={pid.kd:g} | "
-                        f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | x:{x_m:.3f}"
+                    last_pid_gains = pid_gains
+
+                if mode == "ai":
+                    action = agent.act(obs, deterministic=deterministic)
+                    obs, _, done = env.step(action)
+                    _offer_sensor_sample(telemetry, env)
+                    pitch, _, _, _ = features_from_obs(
+                        obs, obs_mode, calibration=calibration
                     )
-            else:
-                _apply_manual_drive(env, manual_power, env.motor_scale)
-                time.sleep(env.loop_dt)
-                obs = env._get_obs()
-                _offer_sensor_sample(telemetry, env)
-                pitch, pitch_rate, x_m, x_dot = features_from_obs(
-                    obs, obs_mode, calibration=calibration
-                )
-                e1, e2 = env.drive.get_encoder_steps()
-                print(
-                    f"MANUAL pwr:{manual_power:.2f} | "
-                    f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | "
-                    f"ENC M1:{e1} M2:{e2} | x:{x_m:.3f}"
-                )
+                    if done or abs(pitch) > tilt_limit_rad:
+                        print("Safety stop: tilt threshold exceeded.")
+                        env.drive.stop()
+                        obs = env.reset()
+                elif mode == "pid":
+                    action = pid.act(obs, pid_force_max_n)
+                    obs, _, done = env.step(action)
+                    _offer_sensor_sample(telemetry, env)
+                    pitch, pitch_rate, x_m, x_dot = features_from_obs(
+                        obs, obs_mode, calibration=calibration
+                    )
+                    if done or abs(pitch) > tilt_limit_rad:
+                        print("PID safety stop: tilt threshold exceeded.")
+                        env.drive.stop()
+                        obs = env.reset()
+                        pid.reset()
+                    else:
+                        print(
+                            f"PID Kp={pid.kp:g} Ki={pid.ki:g} Kd={pid.kd:g} | "
+                            f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | x:{x_m:.3f}"
+                        )
+                else:
+                    pwm = min(abs(manual_power) * env.motor_scale, 1.0)
+                    _apply_manual_drive(env, manual_power, env.motor_scale)
+                    time.sleep(env.loop_dt)
+                    obs = env._get_obs()
+                    _offer_sensor_sample(telemetry, env)
+                    pitch, pitch_rate, x_m, x_dot = features_from_obs(
+                        obs, obs_mode, calibration=calibration
+                    )
+                    e1, e2 = env.drive.get_encoder_steps()
+                    print(
+                        f"MANUAL pwr:{manual_power:.2f} pwm:{pwm:.2f} | "
+                        f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | "
+                        f"ENC M1:{e1} M2:{e2} | x:{x_m:.3f}"
+                    )
+            except Exception:
+                print("robot_loop error:", file=sys.stderr)
+                traceback.print_exc()
+                env.drive.stop()
+                time.sleep(1.0)
 
     finally:
         env.close()

@@ -56,58 +56,61 @@ def _manual_only_html():
         <input id="slider" class="vertical-slider" type="range" min="-1" max="1" step="0.01" value="0">
     </div>
     <div class="value" id="value">0.00</div>
-    <button onclick="stopMotor()">STOP</button>
+    <button id="btnStop" type="button">STOP</button>
     <div class="status" id="status">Connecting...</div>
     <script>
         const statusDiv = document.getElementById("status");
         const slider = document.getElementById("slider");
         const value = document.getElementById("value");
+        const btnStop = document.getElementById("btnStop");
         let ws = null;
         const pending = [];
 
-        function wsSend(payload) {{
+        function wsSend(payload) {
             const text = JSON.stringify(payload);
-            if (ws && ws.readyState === WebSocket.OPEN) {{
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(text);
-            }} else {{
+            } else {
                 pending.push(text);
-            }}
-        }}
+            }
+        }
 
-        function flushPending() {{
-            while (ws && ws.readyState === WebSocket.OPEN && pending.length) {{
+        function flushPending() {
+            while (ws && ws.readyState === WebSocket.OPEN && pending.length) {
                 ws.send(pending.shift());
-            }}
-        }}
+            }
+        }
 
-        function connectWs() {{
-            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {{
-                return;
-            }}
-            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-            ws = new WebSocket(`${{proto}}//${{window.location.host}}/ws`);
-            ws.onopen = () => {{
-                statusDiv.innerText = "Connected";
-                flushPending();
-            }};
-            ws.onerror = () => {{ statusDiv.innerText = "WebSocket error"; }};
-            ws.onclose = () => {{
-                statusDiv.innerText = "Disconnected — retry...";
-                setTimeout(connectWs, 2000);
-            }};
-        }}
-        connectWs();
-
-        slider.oninput = () => {{
-            const v = Number(slider.value);
-            value.innerText = v.toFixed(2);
-            wsSend({{ type: "motor_power", value: v }});
-        }};
-        function stopMotor() {{
+        function stopMotor() {
             slider.value = 0;
             value.innerText = "0.00";
-            wsSend({{ type: "motor_power", value: 0 }});
-        }}
+            wsSend({ type: "motor_power", value: 0 });
+        }
+
+        function connectWs() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+            const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+            ws.onopen = () => {
+                statusDiv.innerText = "Connected";
+                flushPending();
+            };
+            ws.onerror = () => { statusDiv.innerText = "WebSocket error"; };
+            ws.onclose = () => {
+                statusDiv.innerText = "Disconnected — retry...";
+                setTimeout(connectWs, 2000);
+            };
+        }
+
+        slider.addEventListener("input", () => {
+            const v = Number(slider.value);
+            value.innerText = v.toFixed(2);
+            wsSend({ type: "motor_power", value: v });
+        });
+        btnStop.addEventListener("click", stopMotor);
+        connectWs();
     </script>
 </body>
 </html>
@@ -182,9 +185,9 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
 <body>
     <h1>Balans robota</h1>
     <div class="mode-row">
-        <button id="btnAi" class="mode-btn" onclick="setMode('ai')">AI</button>
-        <button id="btnPid" class="mode-btn pid" onclick="setMode('pid')">PID</button>
-        <button id="btnManual" class="mode-btn manual" onclick="setMode('manual')">Manual</button>
+        <button id="btnAi" type="button" class="mode-btn">AI</button>
+        <button id="btnPid" type="button" class="mode-btn pid">PID</button>
+        <button id="btnManual" type="button" class="mode-btn manual">Manual</button>
     </div>
     <div class="status" id="modeLabel">Tryb: ...</div>
     <div class="hint" id="hint">Domyślnie robot balansuje sam (AI).</div>
@@ -204,7 +207,7 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
                 <input id="inpKd" type="number" step="any" value="{default_pid_kd}">
             </div>
         </div>
-        <button class="pid-apply" onclick="applyPidGains()">Zastosuj PID</button>
+        <button id="btnPidApply" type="button" class="pid-apply">Zastosuj PID</button>
         <div class="hint">Start: Kp≈12, Ki=0, Kd=0 (z symulacji). Stosuj ostrożnie na stole.</div>
     </div>
 
@@ -213,15 +216,15 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
             <input id="slider" class="vertical-slider" type="range" min="-1" max="1" step="0.01" value="0">
         </div>
         <div class="value" id="value">0.00</div>
-        <button class="stop" onclick="stopMotor()">STOP</button>
+        <button id="btnStop" type="button" class="stop">STOP</button>
     </div>
 
     <div class="status" id="status">Łączenie...</div>
 
     <div class="record-row">
-        <button id="btnRecord" class="record-btn" onclick="toggleRecording()">Nagraj dane</button>
+        <button id="btnRecord" type="button" class="record-btn">Nagraj dane</button>
         <label class="record-opt">
-            <input type="checkbox" id="chkLiveCharts" onchange="onLiveChartsChange()">
+            <input type="checkbox" id="chkLiveCharts">
             Podgląd wykresów (wolniejsze)
         </label>
         <div class="record-path" id="recordPath"></div>
@@ -258,6 +261,8 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
         const inpKi = document.getElementById("inpKi");
         const inpKd = document.getElementById("inpKd");
         const btnRecord = document.getElementById("btnRecord");
+        const btnStop = document.getElementById("btnStop");
+        const btnPidApply = document.getElementById("btnPidApply");
         const recordPath = document.getElementById("recordPath");
         const chartPanel = document.getElementById("chartPanel");
 
@@ -341,6 +346,12 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
             }} else {{
                 modeLabel.innerText = "Tryb: Manual (suwak)";
             }}
+        }}
+
+        function stopMotor() {{
+            if (slider) slider.value = 0;
+            if (value) value.innerText = "0.00";
+            wsSend({{ type: "motor_power", value: 0 }});
         }}
 
         function applyPidGains() {{
@@ -525,18 +536,21 @@ def _balance_html(default_mode, default_pid_kp, default_pid_ki, default_pid_kd):
             }}
         }}
 
-        slider.oninput = () => {{
-            if (currentMode !== "manual") return;
-            const v = Number(slider.value);
-            value.innerText = v.toFixed(2);
-            wsSend({{ type: "motor_power", value: v }});
-        }};
-
-        function stopMotor() {{
-            slider.value = 0;
-            value.innerText = "0.00";
-            wsSend({{ type: "motor_power", value: 0 }});
+        if (slider) {{
+            slider.addEventListener("input", () => {{
+                if (currentMode !== "manual") return;
+                const v = Number(slider.value);
+                value.innerText = v.toFixed(2);
+                wsSend({{ type: "motor_power", value: v }});
+            }});
         }}
+        btnAi.addEventListener("click", () => setMode("ai"));
+        btnPid.addEventListener("click", () => setMode("pid"));
+        btnManual.addEventListener("click", () => setMode("manual"));
+        btnStop.addEventListener("click", stopMotor);
+        btnPidApply.addEventListener("click", applyPidGains);
+        btnRecord.addEventListener("click", toggleRecording);
+        chkLiveCharts.addEventListener("change", onLiveChartsChange);
 
         renderMode();
         connectWs();

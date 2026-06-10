@@ -326,7 +326,18 @@ class RaspberryBalanceRuntime:
         )
 
     def _motor_cmd_from_action(self, action):
+        action = np.asarray(action, dtype=np.float64).ravel()
         if self.act_dim == 2:
+            # PID / scalar policies may output a single normalized force in [-1, 1].
+            if action.size == 1:
+                cmd = float(np.clip(action[0], -1.0, 1.0))
+                if abs(cmd) < 1e-6:
+                    return 0.0
+                direction = 1.0 if cmd > 0.0 else -1.0
+                power = abs(cmd)
+                if self.min_motor_power > 0.0:
+                    power = max(float(self.min_motor_power), power)
+                return float(direction * power)
             direction, power = parse_dual_action(action, min_power=self.min_motor_power)
             return float(direction * power)
         return float(np.clip(action[0], -1.0, 1.0))
