@@ -216,6 +216,28 @@ def resolve_pid_for_robot(
     physics = physics_from_geometry_dict(geom)
     pid_ref = pid_reference_from_geometry(geom)
 
+    deploy = geom.get("pid_deploy")
+    if deploy:
+        return {
+            "kp": float(deploy.get("kp", kp)),
+            "ki": float(deploy.get("ki", ki)),
+            "kd": float(deploy.get("kd", kd)),
+            "kp_x": float(deploy.get("kp_x", kp_x)),
+            "ki_x": float(deploy.get("ki_x", ki_x)),
+            "kd_x": float(deploy.get("kd_x", kd_x)),
+            "force_max_n": float(
+                deploy.get("force_max_n", physics.force_max_n if use_geometry_force_max else force_max_n)
+            ),
+            "gain_scale_kp": 1.0,
+            "gain_scale_kd": 1.0,
+            "gain_scale": 1.0,
+            "kd_auto": float(deploy.get("kd", kd)),
+            "physics": physics,
+            "pid_reference": pid_ref,
+            "motor_sign": float(geom.get("motor_sign", 1.0)),
+            "motor_scale": geom.get("motor_scale"),
+        }
+
     out_force = float(physics.force_max_n if use_geometry_force_max else force_max_n)
     out_kp, out_ki, out_kd = float(kp), float(ki), float(kd)
     out_kp_x, out_ki_x, out_kd_x = float(kp_x), float(ki_x), float(kd_x)
@@ -257,6 +279,8 @@ def resolve_pid_for_robot(
         "kd_auto": kd_auto,
         "physics": physics,
         "pid_reference": pid_ref,
+        "motor_sign": float(geom.get("motor_sign", 1.0)),
+        "motor_scale": geom.get("motor_scale"),
     }
 
 

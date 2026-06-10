@@ -47,6 +47,7 @@ class RaspberryBalanceRuntime:
         obs_mode=OBS_MODE_PROCESSED4,
         action_layout="scalar",
         min_motor_power=0.2,
+        motor_sign=1.0,
     ):
         from hardware.accelerometer import BMI160, GYR_LSB_PER_DPS
         from hardware.drive_module import DriveModule
@@ -100,6 +101,9 @@ class RaspberryBalanceRuntime:
         if self.action_layout not in ("scalar", "dual"):
             raise ValueError("action_layout must be 'scalar' or 'dual'")
         self.min_motor_power = float(min_motor_power)
+        self.motor_sign = float(motor_sign)
+        if self.motor_sign not in (-1.0, 1.0):
+            raise ValueError("motor_sign must be +1 or -1")
         self.act_dim = 2 if self.action_layout == "dual" else 1
         self._last_sensor_snapshot = None
         # For dual physical IMU (imu_raw12): optional axis sign correction on IMU1
@@ -262,6 +266,31 @@ class RaspberryBalanceRuntime:
         ax, _, az = self.imu.read_acc()
         return _accel_pitch_raw_rad(ax, az) - self.accel_pitch_bias_rad
 
+    def read_balance_state(self):
+        """
+        Pitch + rate for PID (raw LSB + calibration, complementary filter).
+        Avoids normalized obs path used by the policy network.
+        """
+        now = time.time()
+        dt = max(1e-4, now - self._last_t)
+        self._last_t = now
+
+        self.pitch_rate = self._read_pitch_rate_rad()
+        pitch_acc = self._read_pitch_from_acc()
+        pitch_gyro = _wrap_angle_rad(self.pitch + self.pitch_rate * dt)
+        acc_blend = (1.0 - self.pitch_alpha) * _angle_diff_rad(pitch_acc, pitch_gyro)
+        self.pitch = _wrap_angle_rad(pitch_gyro + acc_blend)
+
+        if self.obs_mode in (
+            OBS_MODE_IMU_RAW6_ENC1,
+            OBS_MODE_IMU_RAW12_ENC1,
+            OBS_MODE_IMU_RAW6_ENC2,
+            OBS_MODE_IMU_RAW12_ENC2,
+        ):
+            self._update_encoder_estimates()
+
+        return float(self.pitch), float(self.pitch_rate), float(self.x_est), float(self.x_dot_est)
+
     def reset(self):
         self.drive.stop()
         self.drive.reset_encoders()
@@ -330,20 +359,14 @@ class RaspberryBalanceRuntime:
         if self.act_dim == 2:
             # PID / scalar policies may output a single normalized force in [-1, 1].
             if action.size == 1:
-                cmd = float(np.clip(action[0], -1.0, 1.0))
-                if abs(cmd) < 1e-6:
-                    return 0.0
-                direction = 1.0 if cmd > 0.0 else -1.0
-                power = abs(cmd)
-                if self.min_motor_power > 0.0:
-                    power = max(float(self.min_motor_power), power)
-                return float(direction * power)
+                # PID / scalar force: no min_motor_power floor (needs fine control).
+                return float(np.clip(action[0], -1.0, 1.0))
             direction, power = parse_dual_action(action, min_power=self.min_motor_power)
             return float(direction * power)
         return float(np.clip(action[0], -1.0, 1.0))
 
     def step(self, action):
-        cmd = self._motor_cmd_from_action(action)
+        cmd = self._motor_cmd_from_action(action) * self.motor_sign
         pwm = min(abs(cmd) * self.motor_scale, 1.0)
         if cmd >= 0:
             self.drive.forward(pwm)

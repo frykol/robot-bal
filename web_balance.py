@@ -245,21 +245,37 @@ def robot_loop(
                         env.drive.stop()
                         obs = env.reset()
                 elif mode == "pid":
-                    action = pid.act(obs, pid_force_max_n)
+                    pitch, pitch_rate, x_m, x_dot = env.read_balance_state()
+                    if abs(pitch) > tilt_limit_rad:
+                        print(
+                            f"PID safety stop: pitch {pitch:.3f} rad "
+                            f"(limit {tilt_limit_rad:.3f})"
+                        )
+                        env.drive.stop()
+                        pid.reset()
+                        time.sleep(env.loop_dt)
+                        obs = env._get_obs()
+                        _offer_sensor_sample(telemetry, env)
+                        continue
+
+                    action = pid.act(
+                        obs,
+                        pid_force_max_n,
+                        env_state=[x_m, x_dot, pitch, pitch_rate],
+                    )
                     obs, _, done = env.step(action)
                     _offer_sensor_sample(telemetry, env)
-                    pitch, pitch_rate, x_m, x_dot = features_from_obs(
-                        obs, obs_mode, calibration=calibration
-                    )
-                    if done or abs(pitch) > tilt_limit_rad:
-                        print("PID safety stop: tilt threshold exceeded.")
+                    cmd = float(action[0]) * env.motor_sign
+                    pwm = min(abs(cmd) * env.motor_scale, 1.0)
+                    if done:
+                        print("PID: fall_angle exceeded (env.done).")
                         env.drive.stop()
-                        obs = env.reset()
                         pid.reset()
                     else:
                         print(
                             f"PID Kp={pid.kp:g} Ki={pid.ki:g} Kd={pid.kd:g} | "
-                            f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | x:{x_m:.3f}"
+                            f"pitch:{pitch:.3f} rate:{pitch_rate:.3f} | "
+                            f"act:{cmd:+.3f} pwm:{pwm:.2f} | x:{x_m:.3f}"
                         )
                 else:
                     pwm = min(abs(manual_power) * env.motor_scale, 1.0)
@@ -374,6 +390,13 @@ def main():
         action="store_true",
         help="Nie nadpisuj --pid-force-max-n z geometrii (moment/koło).",
     )
+    parser.add_argument(
+        "--motor-sign",
+        type=int,
+        default=1,
+        choices=[-1, 1],
+        help="Kierunek silników (+1 domyślnie; -1 jeśli PID pogarsza balans).",
+    )
     args = parser.parse_args()
 
     calibration = {}
@@ -384,6 +407,8 @@ def main():
     pid_kp_x = pid_ki_x = pid_kd_x = 0.0
     pid_force_max_n = float(args.pid_force_max_n)
     pid_kp, pid_ki, pid_kd = float(args.pid_kp), float(args.pid_ki), float(args.pid_kd)
+    motor_sign = float(int(args.motor_sign))
+    motor_scale = _profile_to_motor_scale(args.profile)
     if geometry is not None:
         resolved = resolve_pid_for_robot(
             geometry,
@@ -401,7 +426,12 @@ def main():
         pid_ki_x = resolved["ki_x"]
         pid_kd_x = resolved["kd_x"]
         pid_force_max_n = resolved["force_max_n"]
+        if int(args.motor_sign) == 1:
+            motor_sign = float(resolved.get("motor_sign", 1.0))
+        if resolved.get("motor_scale") is not None:
+            motor_scale = float(resolved["motor_scale"])
         print_geometry_pid_summary(resolved)
+        print(f"  motor_sign={motor_sign:+.0f}  motor_scale={motor_scale:.2f}")
     else:
         print(f"Brak geometrii ({args.geometry_path}) — PID bez skalowania.")
 
@@ -414,7 +444,8 @@ def main():
         )
 
     env = RaspberryBalanceRuntime(
-        motor_scale=_profile_to_motor_scale(args.profile),
+        motor_scale=motor_scale,
+        motor_sign=motor_sign,
         loop_hz=args.loop_hz,
         imu_primary_bus_id=args.imu_bus_id,
         dual_physical_imu=args.dual_imu,
